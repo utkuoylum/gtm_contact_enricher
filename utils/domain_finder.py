@@ -70,7 +70,9 @@ def find_company_domain(company_name: str, location: str = "") -> str | None:
     # Build slug candidates — longest first, then first-word fallback
     slug_candidates = _build_slug_candidates(company_name)
     country_tlds = _country_tlds(location)
-    all_tlds = country_tlds + [".com", ".de", ".at", ".net", ".org", ".co.uk", ".io"]
+    # Always include .com early — many DACH companies use .com even if they're German
+    base_tlds = [".com", ".de", ".at", ".ch", ".net", ".org", ".co.uk", ".io", ".eu"]
+    all_tlds = list(dict.fromkeys(country_tlds + base_tlds))  # country TLD first, no duplicates
 
     seen = set()
     for slug in slug_candidates:
@@ -161,9 +163,7 @@ def _search_google_for_domain(query: str, company_name: str) -> str | None:
         if matched:
             return domain
 
-    # No close slug match — return first non-excluded result
-    for d in seen:
-        return d
+    # No slug match found — return None, let TLD guessing take over
     return None
 
 
