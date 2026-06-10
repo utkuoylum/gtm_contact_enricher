@@ -1,0 +1,202 @@
+from __future__ import annotations
+"""
+Scrape company website for team members, contact info.
+Looks at: /about, /team, /people, /contact, /leadership, /management pages.
+"""
+import logging
+import re
+from urllib.parse import urljoin
+from bs4 import BeautifulSoup
+from utils.http_client import get_session, fetch_url, polite_sleep
+from utils.domain_finder import extract_email_from_text, extract_phone_from_text
+
+logger = logging.getLogger(__name__)
+
+TEAM_PAGE_PATHS = [
+    "/team", "/our-team", "/about/team", "/about-us/team",
+    "/about", "/about-us", "/company/team", "/people",
+    "/leadership", "/management", "/executives", "/staff",
+    "/contact", "/contact-us",
+]
+
+NAME_TITLE_PATTERNS = [
+    # Tries to find name + title in cards/list items
+    r"([A-Z][a-z]+ [A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\s*[–\-|,]\s*([A-Za-z &/]+)",
+]
+
+
+def scrape_company_website(domain: str) -> list[dict]:
+    base_url = f"https://{domain}"
+    session = get_session()
+    contacts = []
+    emails_found = set()
+    phones_found = set()
+
+    # First check homepage for emails/phones
+    html = fetch_url(base_url, session, use_scraper_api=True)
+    if html:
+        for e in extract_email_from_text(html):
+            emails_found.add(e)
+        for p in extract_phone_from_text(html):
+            phones_found.add(p)
+        polite_sleep(0.8)
+
+    # Then hit team/about pages
+    discovered_people = []
+    for path in TEAM_PAGE_PATHS:
+        url = base_url + path
+        html = fetch_url(url, session, use_scraper_api=True)
+        if not html:
+            continue
+        polite_sleep(0.8)
+
+        for e in extract_email_from_text(html):
+            emails_found.add(e)
+        for p in extract_phone_from_text(html):
+            phones_found.add(p)
+
+        people = _parse_team_page(html, domain)
+        discovered_people.extend(people)
+
+    # Deduplicate people by name
+    seen_names = set()
+    unique_people = []
+    for p in discovered_people:
+        key = p.get("full_name", "").lower().strip()
+        if key and key not in seen_names:
+            seen_names.add(key)
+            unique_people.append(p)
+
+    # Attach emails directly found on website to people if matching
+    for person in unique_people:
+        name_parts = person.get("full_name", "").lower().split()
+        for email in emails_found:
+            local = email.split("@")[0].lower()
+            if any(part in local for part in name_parts if len(part) > 2):
+                person["email"] = email
+                break
+
+    # If no named people found but emails were, create generic contact entries
+    if not unique_people and emails_found:
+        for email in list(emails_found)[:5]:
+            unique_people.append({
+                "full_name": email.split("@")[0].replace(".", " ").replace("_", " ").title(),
+                "email": email,
+                "title": None,
+                "phone": list(phones_found)[0] if phones_found else None,
+                "source": "website_email",
+            })
+
+    # Attach global phones to people that don't have one
+    generic_phone = list(phones_found)[0] if phones_found else None
+    for p in unique_people:
+        if not p.get("phone") and generic_phone:
+            p["phone"] = generic_phone
+
+    return unique_people[:20]
+
+
+def _parse_team_page(html: str, domain: str) -> list[dict]:
+    soup = BeautifulSoup(html, "html.parser")
+    people = []
+
+    # Look for schema.org Person markup
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            import json
+            data = json.loads(script.string or "")
+            if isinstance(data, list):
+                for item in data:
+                    person = _extract_schema_person(item)
+                    if person:
+                        people.append(person)
+            elif isinstance(data, dict):
+                person = _extract_schema_person(data)
+                if person:
+                    people.append(person)
+        except Exception:
+            pass
+
+    if people:
+        return people
+
+    # Heuristic: find elements that look like person cards
+    # Common patterns: div.team-member, article.person, li.staff-item etc.
+    card_selectors = [
+        "[class*='team']", "[class*='member']", "[class*='person']",
+        "[class*='staff']", "[class*='employee']", "[class*='leadership']",
+        "[class*='executive']", "[class*='people']",
+    ]
+
+    for selector in card_selectors:
+        cards = soup.select(selector)
+        if len(cards) >= 2:
+            for card in cards:
+                person = _extract_person_from_card(card)
+                if person:
+                    people.append(person)
+            if people:
+                return people
+
+    # Last resort: regex scan on plain text
+    text = soup.get_text(separator="\n")
+    for pattern in NAME_TITLE_PATTERNS:
+        for match in re.finditer(pattern, text):
+            name = match.group(1).strip()
+            title = match.group(2).strip()
+            if len(name.split()) >= 2 and len(title) > 3:
+                people.append({"full_name": name, "title": title, "email": None, "phone": None, "source": "website_text"})
+
+    return people
+
+
+def _extract_schema_person(data: dict) -> dict | None:
+    if data.get("@type") not in ("Person", "Employee"):
+        return None
+    name = data.get("name")
+    if not name:
+        return None
+    return {
+        "full_name": name,
+        "title": data.get("jobTitle"),
+        "email": data.get("email"),
+        "phone": data.get("telephone"),
+        "source": "website_schema",
+    }
+
+
+def _extract_person_from_card(card) -> dict | None:
+    text = card.get_text(separator=" ", strip=True)
+    # Look for a name: 2-3 words starting with capitals
+    name_match = re.search(r"\b([A-Z][a-z]+ [A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\b", text)
+    if not name_match:
+        return None
+    name = name_match.group(1)
+
+    # Look for title in nearby element with role/title class
+    title = None
+    for el in card.find_all(["p", "span", "h3", "h4", "small"]):
+        el_class = " ".join(el.get("class", []))
+        if any(kw in el_class.lower() for kw in ["title", "role", "position", "job"]):
+            title = el.get_text(strip=True)
+            break
+    if not title:
+        # Grab the line after the name
+        lines = [l.strip() for l in text.split("  ") if l.strip()]
+        for i, line in enumerate(lines):
+            if name in line and i + 1 < len(lines):
+                candidate = lines[i + 1]
+                if 3 < len(candidate) < 60 and not re.search(r"\d{4}", candidate):
+                    title = candidate
+                    break
+
+    emails = extract_email_from_text(text)
+    phones = extract_phone_from_text(text)
+
+    return {
+        "full_name": name,
+        "title": title,
+        "email": emails[0] if emails else None,
+        "phone": phones[0] if phones else None,
+        "source": "website_card",
+    }

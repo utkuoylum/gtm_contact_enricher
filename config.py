@@ -1,0 +1,70 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Hunter.io API key (free: 25 searches/month, paid: $49/mo for 500)
+HUNTER_API_KEY = os.getenv("HUNTER_API_KEY", "")
+
+# Optional: ScraperAPI key to bypass Google/LinkedIn blocks ($49/mo for 100k requests)
+SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "")
+
+# Request settings
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "15"))
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "2"))
+DELAY_BETWEEN_REQUESTS = float(os.getenv("DELAY_BETWEEN_REQUESTS", "1.5"))
+
+# SMTP email verification
+SMTP_TIMEOUT = int(os.getenv("SMTP_TIMEOUT", "10"))
+SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "verify@enrichment.local")
+
+# Server
+HOST = os.getenv("HOST", "0.0.0.0")
+PORT = int(os.getenv("PORT", "8000"))
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+]
+
+# Job agency context: titles that can authorize recruitment agreements
+# NOTE: short abbreviations (ceo, coo, cfo, cto, gm, md, vp) are matched as whole
+# words in rater.py to avoid false substring matches (e.g. "cto" inside "director").
+DECISION_MAKER_TITLES = {
+    1: [  # C-suite / Executive / Owner — can sign agency agreements
+        "ceo", "chief executive", "founder", "co-founder", "owner",
+        "managing partner", "equity partner", "founding partner", "senior partner",
+        "managing director", "md", "president", "chairman", "coo", "chief operating",
+        "cfo", "chief financial", "cto", "chief technology", "general manager", "gm",
+        "executive director", "director general", "proprietor",
+    ],
+    2: [  # VP / Director level HR & People — can authorize recruitment spend
+        "chief people officer", "cpo", "chief hr officer", "chro",
+        "vp hr", "vp of hr", "vp human resources", "vp of human resources",
+        "vp people", "vp of people", "vp talent", "vp of talent",
+        "director of hr", "director of human resources", "director of people",
+        "director of talent", "head of hr", "head of human resources",
+        "head of people", "head of talent acquisition", "head of recruiting",
+        "head of recruitment", "hr director", "people director", "talent director",
+    ],
+    3: [  # Manager level HR & TA — day-to-day recruitment decisions
+        "hr manager", "human resources manager", "people manager",
+        "talent acquisition manager", "recruiting manager", "recruitment manager",
+        "talent manager", "staffing manager", "workforce manager",
+        "hr business partner", "hrbp", "senior recruiter", "lead recruiter",
+        "senior talent", "principal recruiter",
+    ],
+    4: [  # Practitioner level — involved in hiring, limited authority
+        "recruiter", "talent acquisition specialist", "talent acquisition consultant",
+        "hr specialist", "human resources specialist", "hr generalist",
+        "recruitment specialist", "resourcing partner", "people operations",
+        "hr advisor", "people advisor", "talent partner",
+    ],
+    5: [  # Support / other — likely no independent hiring authority
+        "hr coordinator", "hr assistant", "hr administrator", "hr intern",
+        "talent coordinator", "recruiting coordinator", "people coordinator",
+        "office manager", "administrative", "receptionist",
+    ],
+}
