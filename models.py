@@ -46,6 +46,7 @@ class EnrichmentRequest(BaseModel):
     company_name: str
     location: str = ""
     job_category: str = ""
+    domain: Optional[str] = None  # skip domain discovery if provided (e.g. "ppl-hh.de")
     callback_url: Optional[str] = None  # if set, async mode; result POSTed here
     max_contacts: int = Field(default=10, ge=1, le=50)
     find_direct_lines: bool = False  # enable per-contact direct line hunting (slower)

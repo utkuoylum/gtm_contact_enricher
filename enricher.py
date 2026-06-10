@@ -43,19 +43,22 @@ def _phone_info_to_model(info) -> PhoneDetail | None:
 
 
 def enrich(company_name: str, location: str = "", job_category: str = "", max_contacts: int = 10,
-           find_direct_lines: bool = False) -> EnrichmentResult:
+           find_direct_lines: bool = False, domain: str = "") -> EnrichmentResult:
     result = EnrichmentResult(company_name=company_name)
     errors: list[str] = []
     sources_used: list[str] = []
 
-    # 1. Find company domain
-    logger.info(f"Finding domain for: {company_name}")
-    domain = None
-    try:
-        domain = find_company_domain(company_name, location)
-    except Exception as e:
-        errors.append(f"Domain lookup: {e}")
-    result.domain = domain
+    # 1. Find company domain (skip if caller already knows it)
+    if domain:
+        domain = domain.lstrip("https://").lstrip("http://").lstrip("www.").rstrip("/")
+        logger.info(f"Domain provided: {domain}")
+    else:
+        logger.info(f"Finding domain for: {company_name}")
+        try:
+            domain = find_company_domain(company_name, location) or ""
+        except Exception as e:
+            errors.append(f"Domain lookup: {e}")
+    result.domain = domain or None
     logger.info(f"Domain: {domain}")
 
     # 2. Run people-discovery scrapers + email-hunter + phone-hunter in parallel

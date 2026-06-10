@@ -65,6 +65,7 @@ async def enrich_contacts(request: EnrichmentRequest, background_tasks: Backgrou
                 request.job_category,
                 request.max_contacts,
                 request.find_direct_lines,
+                request.domain or "",
             ),
         )
         return result
@@ -89,6 +90,7 @@ async def _run_and_callback(request: EnrichmentRequest):
                 request.job_category,
                 request.max_contacts,
                 request.find_direct_lines,
+                request.domain or "",
             ),
         )
         payload = result.model_dump()

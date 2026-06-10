@@ -13,10 +13,22 @@ from utils.domain_finder import extract_email_from_text, extract_phone_from_text
 logger = logging.getLogger(__name__)
 
 TEAM_PAGE_PATHS = [
-    "/team", "/our-team", "/about/team", "/about-us/team",
-    "/about", "/about-us", "/company/team", "/people",
+    # Universal
+    "/contact", "/contact-us", "/about", "/about-us",
+    "/team", "/our-team", "/about/team", "/people",
     "/leadership", "/management", "/executives", "/staff",
-    "/contact", "/contact-us",
+    # German / DACH (Impressum is legally required → always has name, phone, email)
+    "/impressum", "/imprint", "/kontakt", "/ueber-uns", "/uber-uns",
+    "/unternehmen", "/unternehmen/team", "/ueber-uns/team",
+    "/team-de", "/ansprechpartner",
+    # French
+    "/contact-fr", "/equipe", "/a-propos",
+    # Spanish/Italian
+    "/contacto", "/chi-siamo", "/contatti",
+    # Dutch
+    "/contact-nl", "/over-ons",
+    # Turkish
+    "/iletisim", "/hakkimizda", "/ekibimiz",
 ]
 
 NAME_TITLE_PATTERNS = [
@@ -41,7 +53,7 @@ def scrape_company_website(domain: str) -> list[dict]:
             phones_found.add(p)
         polite_sleep(0.8)
 
-    # Then hit team/about pages
+    # Then hit team/about/impressum pages
     discovered_people = []
     for path in TEAM_PAGE_PATHS:
         url = base_url + path
@@ -54,6 +66,13 @@ def scrape_company_website(domain: str) -> list[dict]:
             emails_found.add(e)
         for p in extract_phone_from_text(html):
             phones_found.add(p)
+
+        # Impressum pages: use dedicated parser first
+        if path in ("/impressum", "/imprint"):
+            impressum_people = _parse_impressum(html)
+            if impressum_people:
+                discovered_people.extend(impressum_people)
+                continue  # Skip generic parser for this page
 
         people = _parse_team_page(html, domain)
         discovered_people.extend(people)
@@ -79,6 +98,9 @@ def scrape_company_website(domain: str) -> list[dict]:
     # If no named people found but emails were, create generic contact entries
     if not unique_people and emails_found:
         for email in list(emails_found)[:5]:
+            if email.startswith("info@") or email.startswith("kontakt@"):
+                # Generic inbox — skip, not a person
+                continue
             unique_people.append({
                 "full_name": email.split("@")[0].replace(".", " ").replace("_", " ").title(),
                 "email": email,
@@ -94,6 +116,63 @@ def scrape_company_website(domain: str) -> list[dict]:
             p["phone"] = generic_phone
 
     return unique_people[:20]
+
+
+def _parse_impressum(html: str) -> list[dict]:
+    """
+    Parse German Impressum page. Legally required to contain responsible persons,
+    phone, email. Patterns: 'Geschäftsführer: Max Muster', 'Inhaber: ...', etc.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(separator="\n")
+    people = []
+
+    role_patterns = [
+        (r"Gesch[äa]ftsf[üu]hrer[in]?\s*[:\-–]\s*(.+)", "Geschäftsführer"),
+        (r"Inhaber[in]?\s*[:\-–]\s*(.+)", "Inhaber"),
+        (r"Vorstand\s*[:\-–]\s*(.+)", "Vorstand"),
+        (r"Leitung\s*[:\-–]\s*(.+)", "Leitung"),
+        (r"Managing Director\s*[:\-–]\s*(.+)", "Managing Director"),
+        (r"Director\s*[:\-–]\s*(.+)", "Director"),
+        (r"CEO\s*[:\-–]\s*(.+)", "CEO"),
+        (r"Partner\s*[:\-–]\s*(.+)", "Partner"),
+        (r"Verantwortlich[er]?\s*[:\-–]\s*(.+)", "Verantwortlicher"),
+    ]
+
+    emails = extract_email_from_text(text)
+    phones = extract_phone_from_text(text)
+    generic_phone = phones[0] if phones else None
+
+    for pattern, role in role_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            raw = match.group(1).strip().split("\n")[0].strip()
+            # Could be multiple names separated by comma/und
+            raw = re.sub(r"\s+", " ", raw)
+            names = re.split(r",|\bund\b|\band\b", raw)
+            for name_raw in names:
+                name = name_raw.strip()
+                # Must look like a real name: 2 words, both start uppercase
+                if re.match(r"^[A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+", name):
+                    # Filter out obvious non-names
+                    if len(name) > 50 or any(x in name.lower() for x in ["gmbh", "str.", "straße"]):
+                        continue
+                    person = {
+                        "full_name": name,
+                        "title": role,
+                        "email": None,
+                        "phone": generic_phone,
+                        "source": "impressum",
+                    }
+                    # Try to match an email local part to this person
+                    fn_parts = name.lower().split()
+                    for email in emails:
+                        local = email.split("@")[0].lower()
+                        if any(p in local for p in fn_parts if len(p) > 2):
+                            person["email"] = email
+                            break
+                    people.append(person)
+
+    return people
 
 
 def _parse_team_page(html: str, domain: str) -> list[dict]:
