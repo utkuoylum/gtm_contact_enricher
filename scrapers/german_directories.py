@@ -151,12 +151,16 @@ _NORTHDATA_ROLE_PATTERNS = [
 
 
 def _extract_roles_from_text(text: str) -> list[dict]:
-    """Extract officer role+name pairs from text using Northdata\'s format."""
+    """Extract officer role+name pairs from text using Northdata's format."""
     contacts = []
     seen: set[str] = set()
 
+    # Only parse the section before "Nicht mehr" (former officers marker)
+    former_boundary = re.search(r"Nicht mehr\s+Gesch[äa]ftsf[üu]hrer", text, re.IGNORECASE)
+    active_text = text[:former_boundary.start()] if former_boundary else text
+
     for pattern, role in _NORTHDATA_ROLE_PATTERNS:
-        for match in pattern.finditer(text):
+        for match in pattern.finditer(active_text):
             name = match.group(1).strip()
             # Clean soft hyphens and non-breaking spaces that Northdata embeds
             name = name.replace("\xad", "").replace("\xa0", " ").strip()

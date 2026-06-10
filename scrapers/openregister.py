@@ -414,11 +414,15 @@ def _scrape_northdata_web(company_name: str, detail_url: str | None, session) ->
         (r"Aktuelle[r]? gesetzliche[r]? Vertreter\s*\n\s*Gesch[äa]ftsf[üu]hrer(?:in)?\s*\n\s*([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+)", "Geschäftsführer"),
     ]
 
+    # Split text at "Nicht mehr" — names after this marker are former officers
+    former_boundary = re.search(r"Nicht mehr\s+Gesch[äa]ftsf[üu]hrer", text, re.IGNORECASE)
+    active_text = text[:former_boundary.start()] if former_boundary else text
+
     seen: set[str] = set()
     _UI_WORDS = {"Jetzt", "Upgraden", "Premium", "Login", "Anmelden", "Weitere", "Suche", "Mehr"}
     for pattern, role in role_patterns:
         # No IGNORECASE so [A-ZÜÖÄ] stays uppercase-only (prevents "Jetzt upgraden" false positive)
-        for match in re.finditer(pattern, text, re.MULTILINE):
+        for match in re.finditer(pattern, active_text, re.MULTILINE):
             name = match.group(1).strip()
             # Clean soft hyphens and non-breaking spaces that Northdata uses
             name = name.replace("\xad", "").replace("\xa0", " ").strip()

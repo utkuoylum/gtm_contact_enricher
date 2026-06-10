@@ -100,14 +100,31 @@ def scrape_company_website(domain: str) -> list[dict]:
                 person["email"] = email
                 break
 
+    _GENERIC_EMAIL_PREFIXES = {
+        "info", "kontakt", "contact", "office", "hallo", "hello", "mail",
+        "post", "anfrage", "anfragen", "request", "service", "support",
+        "team", "sales", "vertrieb", "marketing", "hr", "jobs", "karriere",
+        "career", "bewerbung", "bewerbungen", "recruiting", "no-reply",
+        "noreply", "donotreply", "newsletter", "news", "press", "media",
+        "presse", "admin", "webmaster", "abuse", "legal", "recht",
+    }
+
+    def _is_generic_email(email: str) -> bool:
+        local = email.split("@")[0].lower().split(".")[0]  # first part before any dot
+        return local in _GENERIC_EMAIL_PREFIXES
+
     # If no named people found but emails were, create generic contact entries
     if not unique_people and emails_found:
         for email in list(emails_found)[:5]:
-            if email.startswith("info@") or email.startswith("kontakt@"):
-                # Generic inbox — skip, not a person
+            if _is_generic_email(email):
                 continue
+            local = email.split("@")[0]
+            parts = re.split(r"[._\-]", local)
+            parts = [p for p in parts if len(p) > 1 and p.isalpha()]
+            if len(parts) < 2:
+                continue  # single-word local like "office" — skip
             unique_people.append({
-                "full_name": email.split("@")[0].replace(".", " ").replace("_", " ").title(),
+                "full_name": " ".join(p.capitalize() for p in parts[:3]),
                 "email": email,
                 "title": None,
                 "phone": list(phones_found)[0] if phones_found else None,
