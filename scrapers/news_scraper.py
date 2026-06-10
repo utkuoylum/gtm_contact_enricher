@@ -180,6 +180,24 @@ def _extract_executives(text_blocks: list[str], company_name: str) -> list[dict]
     return list(found.values())
 
 
+# Common English/German words that are NOT name components
+_NON_NAME_WORDS = {
+    "new", "old", "big", "small", "great", "good", "bad", "high", "low",
+    "the", "and", "for", "with", "from", "this", "that", "those", "these",
+    "our", "your", "their", "its", "has", "have", "will", "been", "being",
+    "letter", "urging", "outside", "inside", "under", "over", "more", "less",
+    "press", "release", "report", "update", "today", "yesterday", "monday",
+    "tuesday", "wednesday", "thursday", "friday", "about", "also", "only",
+    "just", "than", "then", "when", "where", "while", "which", "there",
+    "market", "company", "group", "global", "world", "national", "international",
+    "north", "south", "east", "west", "central", "united", "states", "city",
+    "york", "angeles", "francisco", "london", "berlin", "munich", "frankfurt",
+    "chief", "executive", "officer", "director", "manager", "head",  # titles, not names
+    "sales", "marketing", "finance", "legal", "human", "resources",
+    "new", "year", "quarter", "annual", "monthly", "weekly", "daily",
+}
+
+
 def _is_valid_name(name: str) -> bool:
     parts = name.split()
     if len(parts) < 2 or len(parts) > 4:
@@ -188,11 +206,20 @@ def _is_valid_name(name: str) -> bool:
     for p in parts:
         if not p[0].isupper():
             return False
-        if not re.match(r"^[A-Za-z\-'\.]+$", p):
+        if not re.match(r"^[A-Za-zÄÖÜäöüß\-'\.]+$", p):
             return False
-    # Reject common false positives
-    false_positives = {"New York", "United States", "United Kingdom", "Los Angeles",
-                       "San Francisco", "Press Release", "Chief Executive"}
+        # Reject if any part is a known non-name word
+        if p.lower() in _NON_NAME_WORDS:
+            return False
+        # Reject very short or very long parts
+        if len(p) < 2 or len(p) > 25:
+            return False
+    # Reject known false positive phrases
+    false_positives = {
+        "New York", "United States", "United Kingdom", "Los Angeles",
+        "San Francisco", "Press Release", "Chief Executive",
+        "Managing Director", "Human Resources",
+    }
     return name not in false_positives
 
 

@@ -58,30 +58,67 @@ def find_company_domain(company_name: str, location: str = "") -> str | None:
     """Find the primary website domain of a company via search + direct resolution."""
     # Try search engines first
     for query in [
-        f'"{company_name}" site:* "{location}"' if location else f'"{company_name}" official website',
-        f'"{company_name}" {location} official website',
-        f'"{company_name}" {location} Kontakt',
+        f'"{company_name}" official website',
+        f'"{company_name}" {location} Kontakt' if location else f'"{company_name}" Kontakt Impressum',
+        f'"{company_name}" {location} website' if location else f'"{company_name}" website',
     ]:
         domain = _search_google_for_domain(query, company_name)
         if domain:
             return domain
 
     # Fallback: try direct TLD guesses
-    slug = _clean_slug(company_name)
-    if not slug:
-        return None
-
+    # Build slug candidates — longest first, then first-word fallback
+    slug_candidates = _build_slug_candidates(company_name)
     country_tlds = _country_tlds(location)
-    all_tlds = country_tlds + [".com", ".de", ".net", ".org", ".co.uk", ".io"]
+    all_tlds = country_tlds + [".com", ".de", ".at", ".net", ".org", ".co.uk", ".io"]
+
     seen = set()
-    for tld in all_tlds:
-        if tld in seen:
-            continue
-        seen.add(tld)
-        if _domain_resolves(slug + tld):
-            return slug + tld
+    for slug in slug_candidates:
+        for tld in all_tlds:
+            key = slug + tld
+            if key in seen:
+                continue
+            seen.add(key)
+            if _domain_resolves(key):
+                return key
 
     return None
+
+
+def _build_slug_candidates(company_name: str) -> list[str]:
+    """
+    Generate ordered list of slug candidates to try.
+
+    'Wenatex Das Schlafsystem GmbH' →
+      ['wenatex', 'wenatexdasschlafsystem', 'wenatexschlafsystem']
+
+    Rationale: the first meaningful word is almost always the brand name.
+    The full slug (minus legal suffix) is a secondary candidate.
+    """
+    # Strip legal suffix
+    cleaned = _LEGAL_SUFFIXES.sub("", company_name).strip(" ,.-&")
+
+    candidates = []
+
+    # 1. First word only (brand name — highest priority for complex names)
+    words = cleaned.split()
+    if words:
+        first_word_slug = re.sub(r"[^a-z0-9]", "", words[0].lower())
+        if len(first_word_slug) >= 3:
+            candidates.append(first_word_slug)
+
+    # 2. Full cleaned slug (without legal suffix)
+    full_slug = re.sub(r"[^a-z0-9]", "", cleaned.lower())
+    if full_slug and full_slug not in candidates and len(full_slug) <= 25:
+        candidates.append(full_slug)
+
+    # 3. First two words (catches "Weber Maschinenbau" → "webermaschinenbau")
+    if len(words) >= 2:
+        two_word_slug = re.sub(r"[^a-z0-9]", "", " ".join(words[:2]).lower())
+        if two_word_slug not in candidates and len(two_word_slug) <= 20:
+            candidates.append(two_word_slug)
+
+    return candidates
 
 
 def _search_google_for_domain(query: str, company_name: str) -> str | None:
@@ -95,7 +132,9 @@ def _search_google_for_domain(query: str, company_name: str) -> str | None:
 
     # Extract all hrefs and find organic result URLs
     seen = set()
-    slug = _clean_slug(company_name)
+    # Use first-word slug for matching — more reliable for "Wenatex Das Schlafsystem GmbH"
+    slug_candidates_list = _build_slug_candidates(company_name)
+    primary_slug = slug_candidates_list[0] if slug_candidates_list else _clean_slug(company_name)
 
     for a in soup.find_all("a", href=True):
         href = a["href"]
@@ -111,10 +150,15 @@ def _search_google_for_domain(query: str, company_name: str) -> str | None:
             continue
         seen.add(domain)
 
-        # Match: cleaned slug appears anywhere in domain's first label
+        # Match: any slug candidate appears in domain's first label
         domain_base = re.sub(r"[^a-z0-9]", "", domain.split(".")[0])
-        if slug and (slug in domain_base or domain_base in slug or
-                     (len(slug) >= 3 and slug[:3] in domain_base)):
+        matched = False
+        for s in slug_candidates_list:
+            if s and (s in domain_base or domain_base in s or
+                      (len(s) >= 4 and s[:4] in domain_base)):
+                matched = True
+                break
+        if matched:
             return domain
 
     # No close slug match — return first non-excluded result
