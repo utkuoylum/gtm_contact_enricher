@@ -18,6 +18,8 @@ from utils.rater import rate_contact
 from scrapers.website_scraper import scrape_company_website
 from scrapers.linkedin_scraper import search_linkedin_contacts
 from scrapers.google_scraper import google_contact_search, scrape_crunchbase_people
+from scrapers.companies_house import find_company_officers
+from scrapers.news_scraper import find_executives_in_news
 from email_hunter import hunt_domain, find_person_email
 from email_hunter.smtp_verifier import verify_emails_bulk
 from phone_hunter import hunt_company_phone, hunt_direct_line
@@ -67,16 +69,18 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
     phone_result = None
 
     people_tasks = {
-        "linkedin":   lambda: search_linkedin_contacts(company_name, location, job_category),
-        "google":     lambda: google_contact_search(company_name, location, domain or ""),
-        "crunchbase": lambda: scrape_crunchbase_people(company_name),
-        "phone":      lambda: hunt_company_phone(company_name, domain or "", location),
+        "linkedin":        lambda: search_linkedin_contacts(company_name, location, job_category),
+        "google":          lambda: google_contact_search(company_name, location, domain or ""),
+        "crunchbase":      lambda: scrape_crunchbase_people(company_name),
+        "companies_house": lambda: find_company_officers(company_name, location),
+        "news":            lambda: find_executives_in_news(company_name, location),
+        "phone":           lambda: hunt_company_phone(company_name, domain or "", location),
     }
     if domain:
         people_tasks["website"] = lambda: scrape_company_website(domain)
         people_tasks["email_hunter"] = lambda: hunt_domain(domain, company_name)
 
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {executor.submit(fn): name for name, fn in people_tasks.items()}
         try:
             for future in as_completed(futures, timeout=150):

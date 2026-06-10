@@ -3,7 +3,7 @@ import re
 import logging
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
-from utils.http_client import get_session, fetch_url, polite_sleep
+from utils.http_client import get_session, fetch_url, polite_sleep, multi_engine_search
 
 logger = logging.getLogger(__name__)
 
@@ -86,13 +86,7 @@ def find_company_domain(company_name: str, location: str = "") -> str | None:
 
 def _search_google_for_domain(query: str, company_name: str) -> str | None:
     session = get_session()
-    encoded = query.replace(" ", "+")
-    url = f"https://www.google.com/search?q={encoded}&num=10"
-    html = fetch_url(url, session, use_scraper_api=True)
-    if not html:
-        # Try DuckDuckGo as fallback
-        url = f"https://html.duckduckgo.com/html/?q={encoded}"
-        html = fetch_url(url, session)
+    html = multi_engine_search(query, session)
     if not html:
         return None
 

@@ -1,41 +1,59 @@
 from __future__ import annotations
 """
-LinkedIn contact discovery via Google search (no LinkedIn auth required).
-Searches: site:linkedin.com/in "Company Name" "HR" OR "CEO" etc.
-Parses name + title from Google snippet.
+LinkedIn contact discovery via search engines — no LinkedIn auth needed.
+
+Approach:
+  1. site:linkedin.com/in searches for profiles (Google, Bing, DDG)
+  2. Name extracted from URL slug (reliable)
+  3. Title extracted from snippet (multiple format patterns)
+  4. Email hints sometimes appear in bio text (some users publish them)
 """
 import re
 import logging
 from urllib.parse import quote_plus
 from bs4 import BeautifulSoup
-from utils.http_client import get_session, fetch_url, polite_sleep
+from utils.http_client import get_session, fetch_url, polite_sleep, multi_engine_search
+from utils.domain_finder import extract_email_from_text
 from config import DECISION_MAKER_TITLES
 
 logger = logging.getLogger(__name__)
 
-# Titles to search for (flattened from DECISION_MAKER_TITLES, prioritizing 1-3)
 TARGET_TITLES = [
-    "CEO", "Founder", "Managing Director", "Owner", "HR Director",
-    "Head of HR", "Chief People Officer", "VP HR", "Talent Acquisition",
-    "HR Manager", "Recruiting Manager", "Head of Talent", "CHRO", "CPO",
+    "CEO", "Founder", "Managing Director", "Owner", "General Manager",
+    "HR Director", "Head of HR", "Chief People Officer", "VP HR",
+    "Talent Acquisition", "HR Manager", "Recruiting Manager",
+    "Head of Talent", "CHRO", "CPO", "Director",
+]
+
+_SNIPPET_TITLE_PATTERNS = [
+    # "Name · Title at Company"
+    r"[·•]\s*(.+?)\s+(?:at|@|bei|chez|at)\s+.{2,40}(?:\||$)",
+    # "Name · Title · Company"
+    r"[·•]\s*(.+?)\s*[·•]",
+    # "Name — Title"
+    r"[-–—]\s*(.{5,60}?)\s*(?:\||$|\n)",
+    # Title appears after comma: "Name, Title at Company"
+    r",\s*(.{5,60}?)\s+(?:at|@|bei)\s+",
+    # "Title · Company": name already in URL, title first in snippet
+    r"^([A-Za-z /&\-]{5,60}?)\s*[·•|]",
 ]
 
 
 def search_linkedin_contacts(company_name: str, location: str = "", job_category: str = "") -> list[dict]:
-    contacts = []
-    seen_profiles = set()
+    contacts: list[dict] = []
+    seen_profiles: set[str] = set()
     session = get_session()
 
     queries = _build_queries(company_name, location, job_category)
 
     for query in queries:
-        results = _google_search_linkedin(query, session)
-        polite_sleep(2.0)
+        results = _search_for_profiles(query, session)
+        polite_sleep(1.5)
         for r in results:
             url = r.get("url", "")
             if url and url not in seen_profiles:
                 seen_profiles.add(url)
-                person = _parse_linkedin_snippet(r, company_name)
+                person = _parse_profile_result(r, company_name)
                 if person:
                     contacts.append(person)
         if len(contacts) >= 15:
@@ -46,131 +64,117 @@ def search_linkedin_contacts(company_name: str, location: str = "", job_category
 
 def _build_queries(company_name: str, location: str, job_category: str) -> list[str]:
     site = "site:linkedin.com/in"
-    company_q = f'"{company_name}"'
+    name_q = f'"{company_name}"'
     loc = f'"{location}"' if location else ""
 
-    queries = []
-    # High-priority: HR/People roles
-    hr_terms = '"HR Director" OR "Head of HR" OR "HR Manager" OR "Chief People" OR "Talent Acquisition" OR "Recruiting Manager"'
-    queries.append(f'{site} {company_q} ({hr_terms}) {loc}'.strip())
+    queries = [
+        # HR/People ops roles — highest priority for job agency
+        f'{site} {name_q} ("HR Director" OR "Head of HR" OR "Chief People" OR "Talent Acquisition" OR "CHRO") {loc}',
+        # C-suite
+        f'{site} {name_q} (CEO OR Founder OR "Managing Director" OR Owner OR "General Manager") {loc}',
+        # HR Managers
+        f'{site} {name_q} ("HR Manager" OR "Recruiting Manager" OR "Head of Talent" OR "People Manager") {loc}',
+    ]
 
-    # C-suite
-    exec_terms = '"CEO" OR "Founder" OR "Managing Director" OR "Owner" OR "General Manager"'
-    queries.append(f'{site} {company_q} ({exec_terms}) {loc}'.strip())
-
-    # If job_category provided, search for relevant hiring manager
     if job_category:
-        queries.append(f'{site} {company_q} "{job_category}" manager OR director {loc}'.strip())
+        # Relevant category manager
+        queries.append(f'{site} {name_q} "{job_category}" manager OR director {loc}')
 
     # Broad sweep
-    queries.append(f'{site} {company_q} {loc}'.strip())
+    queries.append(f'{site} {name_q} {loc}')
 
     return queries
 
 
-def _google_search_linkedin(query: str, session) -> list[dict]:
-    encoded = quote_plus(query)
-    # Try multiple search engines
-    sources = [
-        f"https://www.google.com/search?q={encoded}&num=10",
-        f"https://www.bing.com/search?q={encoded}&count=10",
-    ]
-    for url in sources:
-        html = fetch_url(url, session, use_scraper_api=True)
-        if html:
-            results = _parse_search_results(html, url)
-            if results:
-                return results
-    return []
+def _search_for_profiles(query: str, session) -> list[dict]:
+    html = multi_engine_search(query, session)
+    if not html:
+        return []
+    return _parse_search_html(html)
 
 
-def _parse_search_results(html: str, source_url: str) -> list[dict]:
+def _parse_search_html(html: str) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
     results = []
-    is_bing = "bing.com" in source_url
 
-    if is_bing:
-        items = soup.select("li.b_algo")
-    else:
-        items = soup.select("div.g, div[data-hveid]")
+    # Generic link extraction — works across search engines
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        # Unwrap Google redirect
+        m = re.search(r"/url\?q=(https?://[^&]+)", href)
+        if m:
+            href = m.group(1)
 
-    for item in items:
-        a_tag = item.find("a", href=True)
-        if not a_tag:
-            continue
-        href = a_tag["href"]
         if "linkedin.com/in/" not in href:
             continue
 
-        # Extract clean URL
-        url_match = re.search(r"(https?://[a-z.]*linkedin\.com/in/[^&\"' ]+)", href)
-        if not url_match:
+        url_clean = re.sub(r"\?.*$", "", href)
+        if not re.search(r"linkedin\.com/in/[a-z0-9\-]+", url_clean):
             continue
-        profile_url = url_match.group(1).split("?")[0]
 
-        # Extract snippet text for name + title
-        snippet = item.get_text(separator=" ", strip=True)
-        results.append({"url": profile_url, "snippet": snippet})
+        # Get surrounding snippet text
+        parent = a.find_parent(["div", "li", "article", "section"])
+        snippet = parent.get_text(separator=" ", strip=True) if parent else a.get_text()
+        results.append({"url": url_clean, "snippet": snippet})
 
     return results
 
 
-def _parse_linkedin_snippet(result: dict, company_name: str) -> dict | None:
-    snippet = result.get("snippet", "")
+def _parse_profile_result(result: dict, company_name: str) -> dict | None:
     url = result.get("url", "")
+    snippet = result.get("snippet", "")
 
-    # Extract name from URL slug: linkedin.com/in/john-smith → John Smith
-    slug_match = re.search(r"/in/([a-z0-9\-]+)", url)
+    # Extract name from URL slug
+    slug_match = re.search(r"/in/([a-z0-9][a-z0-9\-]+)", url)
     if not slug_match:
         return None
 
     slug = slug_match.group(1)
-    # Remove trailing numbers (e.g. john-smith-12345 → john-smith)
+    # Remove trailing ID numbers: "john-smith-12345678" → "john-smith"
+    slug = re.sub(r"-\d{5,}$", "", slug)
     slug = re.sub(r"-\d+$", "", slug)
-    name_from_slug = " ".join(w.capitalize() for w in slug.split("-") if w.isalpha())
 
-    if len(name_from_slug.split()) < 2:
+    name_parts = [w for w in slug.split("-") if w.isalpha() and len(w) > 1]
+    if len(name_parts) < 2:
         return None
 
+    name = " ".join(w.capitalize() for w in name_parts[:3])
+
     # Extract title from snippet
-    title = _extract_title_from_snippet(snippet, company_name)
+    title = _extract_title(snippet, company_name)
+
+    # Extract email if someone published it in their bio (uncommon but happens)
+    emails = extract_email_from_text(snippet)
+    email = emails[0] if emails else None
 
     return {
-        "full_name": name_from_slug,
+        "full_name": name,
         "title": title,
         "linkedin_url": url,
-        "email": None,
+        "email": email,
         "phone": None,
         "source": "linkedin_google",
     }
 
 
-def _extract_title_from_snippet(snippet: str, company_name: str) -> str | None:
-    # Common LinkedIn snippet format: "Name · Title at Company"
-    patterns = [
-        r"·\s*(.+?)\s+(?:at|@)\s+" + re.escape(company_name),
-        r"·\s*(.+?)\s*[-–]\s*" + re.escape(company_name),
-        r"^[^·]+·\s*([^·]{5,60})",
-    ]
-    for pat in patterns:
-        m = re.search(pat, snippet, re.IGNORECASE)
+def _extract_title(snippet: str, company_name: str) -> str | None:
+    # Remove company name to reduce noise
+    clean = re.sub(re.escape(company_name), "", snippet, flags=re.IGNORECASE)
+
+    for pat in _SNIPPET_TITLE_PATTERNS:
+        m = re.search(pat, clean, re.IGNORECASE)
         if m:
-            title = m.group(1).strip()
-            if 3 < len(title) < 80:
-                return title
+            candidate = m.group(1).strip(" ·|-–—,")
+            # Sanity check: not too long, not a URL, has real content
+            if 4 < len(candidate) < 80 and "http" not in candidate:
+                return candidate
 
-    # Fallback: look for known title keywords in snippet
-    all_keywords = []
-    for kws in DECISION_MAKER_TITLES.values():
-        all_keywords.extend(kws)
-
+    # Last resort: find known role keyword in snippet
+    all_kws = [kw for kws in DECISION_MAKER_TITLES.values() for kw in kws]
     snippet_lower = snippet.lower()
-    for kw in all_keywords:
+    for kw in sorted(all_kws, key=len, reverse=True):
         if kw in snippet_lower:
-            # Extract surrounding context
             idx = snippet_lower.index(kw)
-            start = max(0, idx - 5)
-            end = min(len(snippet), idx + len(kw) + 30)
-            return snippet[start:end].strip()
+            return snippet[idx: idx + len(kw) + 30].strip()
 
     return None
