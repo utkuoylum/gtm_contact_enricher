@@ -20,6 +20,9 @@ from scrapers.linkedin_scraper import search_linkedin_contacts
 from scrapers.google_scraper import google_contact_search, scrape_crunchbase_people
 from scrapers.companies_house import find_company_officers
 from scrapers.news_scraper import find_executives_in_news
+from scrapers.xing_scraper import find_xing_contacts
+from scrapers.german_directories import find_german_directory_contacts
+from scrapers.openregister import find_german_register_officers
 from email_hunter import hunt_domain, find_person_email
 from email_hunter.smtp_verifier import verify_emails_bulk
 from phone_hunter import hunt_company_phone, hunt_direct_line
@@ -68,6 +71,9 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
     hunt_result = None
     phone_result = None
 
+    # Detect if this is likely a German/DACH company
+    is_dach = _is_dach_location(location) or _is_dach_domain(domain or "")
+
     people_tasks = {
         "linkedin":        lambda: search_linkedin_contacts(company_name, location, job_category),
         "google":          lambda: google_contact_search(company_name, location, domain or ""),
@@ -76,11 +82,18 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
         "news":            lambda: find_executives_in_news(company_name, location),
         "phone":           lambda: hunt_company_phone(company_name, domain or "", location),
     }
+
+    # DACH-specific sources (highest quality for German companies)
+    if is_dach:
+        people_tasks["xing"]              = lambda: find_xing_contacts(company_name, location)
+        people_tasks["german_register"]   = lambda: find_german_register_officers(company_name, location)
+        people_tasks["german_directories"] = lambda: find_german_directory_contacts(company_name, location)
+
     if domain:
         people_tasks["website"] = lambda: scrape_company_website(domain)
         people_tasks["email_hunter"] = lambda: hunt_domain(domain, company_name)
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(fn): name for name, fn in people_tasks.items()}
         try:
             for future in as_completed(futures, timeout=150):
@@ -207,6 +220,28 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
     result.sources_used = list(set(sources_used))
     result.errors = errors
     return result
+
+
+_DACH_CITIES = {
+    "hamburg", "berlin", "münchen", "munich", "frankfurt", "köln", "cologne",
+    "düsseldorf", "dortmund", "stuttgart", "hannover", "nuremberg", "nürnberg",
+    "leipzig", "bremen", "dresden", "wien", "vienna", "zürich", "zurich",
+    "genf", "geneva", "basel", "graz", "salzburg", "innsbruck", "linz",
+    "germany", "deutschland", "austria", "österreich", "switzerland", "schweiz",
+    "dach", "de", "at", "ch",
+}
+
+
+def _is_dach_location(location: str) -> bool:
+    loc_lower = location.lower()
+    return any(city in loc_lower for city in _DACH_CITIES)
+
+
+def _is_dach_domain(domain: str) -> bool:
+    if not domain:
+        return False
+    tld = domain.lower().split(".")[-1]
+    return tld in ("de", "at", "ch")
 
 
 def _infer_region(domain: str, location: str) -> str:

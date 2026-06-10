@@ -34,13 +34,25 @@ USER_AGENTS = [
 # words in rater.py to avoid false substring matches (e.g. "cto" inside "director").
 DECISION_MAKER_TITLES = {
     1: [  # C-suite / Executive / Owner — can sign agency agreements
+        # English
         "ceo", "chief executive", "founder", "co-founder", "owner",
         "managing partner", "equity partner", "founding partner", "senior partner",
         "managing director", "md", "president", "chairman", "coo", "chief operating",
         "cfo", "chief financial", "cto", "chief technology", "general manager", "gm",
         "executive director", "director general", "proprietor",
+        # German — Geschäftsführer is THE decision-maker in every GmbH/UG
+        "geschäftsführer", "geschaeftsfuehrer", "geschaftsfuhrer",
+        "geschäftsführerin", "gesellschafter", "gesellschafterin",
+        "inhaber", "inhaberin", "vorstand", "vorstandsvorsitzender",
+        "vorstandsvorsitzende", "gründer", "gründerin", "mitgründer",
+        "geschäftsleiterin", "geschäftsleiter", "betriebsinhaber",
+        "alleininhaber", "eigentümer", "eigentümerin",
+        # French / Italian (for multinational subsidiaries)
+        "directeur général", "directeur", "pdg", "gérant",
+        "amministratore delegato", "direttore generale",
     ],
     2: [  # VP / Director level HR & People — can authorize recruitment spend
+        # English
         "chief people officer", "cpo", "chief hr officer", "chro",
         "vp hr", "vp of hr", "vp human resources", "vp of human resources",
         "vp people", "vp of people", "vp talent", "vp of talent",
@@ -48,23 +60,56 @@ DECISION_MAKER_TITLES = {
         "director of talent", "head of hr", "head of human resources",
         "head of people", "head of talent acquisition", "head of recruiting",
         "head of recruitment", "hr director", "people director", "talent director",
+        # German HR/People leadership
+        "personalleiter", "personalleiterin", "leiter personal", "leiterin personal",
+        "personalchef", "hr-leiter", "hr-leiterin", "hr direktor", "hr direktorin",
+        "leiter personalwesen", "leiter human resources",
+        "prokurist", "prokuristin",  # Prokurist = authorized signatory, can sign contracts
+        "bereichsleiter personal", "abteilungsleiter personal",
+        "personalverantwortlicher", "personalverantwortliche",
+        "talent acquisition leiter", "recruiting leiter",
     ],
     3: [  # Manager level HR & TA — day-to-day recruitment decisions
+        # English
         "hr manager", "human resources manager", "people manager",
         "talent acquisition manager", "recruiting manager", "recruitment manager",
         "talent manager", "staffing manager", "workforce manager",
         "hr business partner", "hrbp", "senior recruiter", "lead recruiter",
         "senior talent", "principal recruiter",
+        # German HR Manager level
+        "personalmanager", "personalmanagerin", "hr-manager", "hr-managerin",
+        "personalreferent", "personalreferentin",
+        "recruiter", "recruiterin", "senior recruiter", "lead recruiter",
+        "talent acquisition manager", "recruiting manager",
+        "personalberater", "personalberaterin",
+        "teamleiter personal", "teamleiterin personal",
     ],
     4: [  # Practitioner level — involved in hiring, limited authority
-        "recruiter", "talent acquisition specialist", "talent acquisition consultant",
+        # English
+        "talent acquisition specialist", "talent acquisition consultant",
         "hr specialist", "human resources specialist", "hr generalist",
         "recruitment specialist", "resourcing partner", "people operations",
         "hr advisor", "people advisor", "talent partner",
+        # German practitioner level
+        "personalsachbearbeiter", "personalsachbearbeiterin",
+        "hr-spezialist", "hr-spezialistin", "hr-generalist", "hr-generalistin",
+        "personalfachmann", "personalfachfrau",
+        "mitarbeiter personal", "mitarbeiterin personal",
+        "sachbearbeiter personal",
     ],
     5: [  # Support / other — likely no independent hiring authority
+        # English
         "hr coordinator", "hr assistant", "hr administrator", "hr intern",
         "talent coordinator", "recruiting coordinator", "people coordinator",
         "office manager", "administrative", "receptionist",
+        # German support level
+        "personalkaufmann", "personalkauffrau",
+        "hr-koordinator", "hr-koordinatorin",
+        "personalassistent", "personalassistentin",
+        "hr-assistent", "hr-assistentin",
+        "sekretär", "sekretärin", "büroleiter", "büroleiterin",
     ],
 }
+
+# German short abbreviations that need word-boundary matching in rater.py
+GERMAN_SHORT_ABBREVS = {"gm", "md", "vp", "ceo", "cfo", "cto", "coo", "cpo"}

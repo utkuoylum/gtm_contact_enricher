@@ -186,10 +186,47 @@ def apply_pattern(pattern: str, first_name: str, last_name: str) -> str:
     )
 
 
+# German .de domains prioritize {f}.{last} higher than other locales
+# Research: vorname.nachname > v.nachname > vnachname > vorname (for German SMEs)
+_GERMAN_PRIORITY_PATTERNS = [
+    "{first}.{last}",   # hans.mueller@firma.de — most common overall
+    "{f}.{last}",       # h.mueller@firma.de   — very common in German SMEs
+    "{first}{last}",    # hansmueller@firma.de
+    "{f}{last}",        # hmueller@firma.de
+    "{first}",          # hans@firma.de         — small companies
+    "{last}",           # mueller@firma.de       — some professional services
+    "{last}.{first}",   # mueller.hans@firma.de — financial sector
+    "{first}_{last}",   # hans_mueller@firma.de
+    "{last}{first}",    # muellerhanss@firma.de
+    "{first}.{l}",      # hans.m@firma.de
+    "{first}{l}",       # hansm@firma.de
+    "{last}.{f}",       # mueller.h@firma.de
+    "{f}{l}",           # hm@firma.de (rare)
+    "{last}_{first}",   # mueller_hans@firma.de
+    "{first}-{last}",   # hans-mueller@firma.de
+    "{last}-{first}",   # mueller-hans@firma.de
+]
+
+_STANDARD_PRIORITY_PATTERNS = [
+    "{first}.{last}", "{first}{last}", "{f}{last}",
+    "{first}", "{f}.{last}", "{first}_{last}",
+    "{last}.{first}", "{last}{first}", "{last}",
+    "{first}.{l}", "{first}{l}", "{last}.{f}",
+    "{f}{l}", "{last}_{first}", "{first}-{last}", "{last}-{first}",
+]
+
+
+def _is_german_domain(domain: str) -> bool:
+    """Heuristic: .de, .at, .ch domains use German email conventions."""
+    tld = domain.lower().split(".")[-1] if "." in domain else ""
+    return tld in ("de", "at", "ch")
+
+
 def generate_all_candidates(first_name: str, last_name: str, domain: str,
                             preferred_pattern: str | None = None) -> list[str]:
     """
     Generate all possible email candidates for a person, ranked by likelihood.
+    For German (.de/.at/.ch) domains, prioritizes {f}.{last} higher.
     preferred_pattern (from detect_pattern) is put first if provided.
     """
     first = normalize(first_name)
@@ -200,7 +237,6 @@ def generate_all_candidates(first_name: str, last_name: str, domain: str,
     fi = first[0]
     li = last[0]
 
-    # Build all variants
     seen = set()
     candidates = []
 
@@ -210,19 +246,14 @@ def generate_all_candidates(first_name: str, last_name: str, domain: str,
             seen.add(email)
             candidates.append(email)
 
-    # Preferred pattern first
+    # Preferred pattern first (from detect_pattern)
     if preferred_pattern:
         preferred_local = apply_pattern(preferred_pattern, first_name, last_name)
         add(preferred_local)
 
-    # Then all patterns in priority order
-    priority_patterns = [
-        "{first}.{last}", "{first}{last}", "{f}{last}",
-        "{first}", "{f}.{last}", "{first}_{last}",
-        "{last}.{first}", "{last}{first}", "{last}",
-        "{first}.{l}", "{first}{l}", "{last}.{f}",
-        "{f}{l}", "{last}_{first}", "{first}-{last}", "{last}-{first}",
-    ]
+    # Select pattern order based on domain locale
+    priority_patterns = _GERMAN_PRIORITY_PATTERNS if _is_german_domain(domain) else _STANDARD_PRIORITY_PATTERNS
+
     for pat in priority_patterns:
         local = apply_pattern(pat, first_name, last_name)
         add(local)
