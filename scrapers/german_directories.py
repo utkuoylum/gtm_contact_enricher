@@ -68,108 +68,115 @@ def find_german_directory_contacts(company_name: str, location: str = "") -> lis
 
 def _scrape_northdata(company_name: str, location: str, session) -> list[dict]:
     """
-    Northdata.com aggregates Handelsregister + Bundesanzeiger.
-    The web search page is pre-rendered HTML — shows Geschäftsführer names.
+    Northdata.de aggregates Handelsregister + Bundesanzeiger.
+    Two-step: suggest API to find company URL → scrape detail page for Geschäftsführer.
     """
     contacts = []
     city = location.split(",")[0].strip() if location else ""
 
-    # North Data search
-    query = f"{company_name}"
-    if city:
-        query += f" {city}"
-
-    search_url = f"https://www.northdata.com/search?q={quote_plus(query)}&language=de"
-    html = fetch_url(search_url, session)
-    if not html:
-        # Try English version
-        search_url = f"https://www.northdata.com/_search?query={quote_plus(query)}"
-        html = fetch_url(search_url, session)
+    # Step 1: Suggest API to find the company
+    query = company_name
+    suggest_url = f"https://www.northdata.de/_api/v1/suggest?query={quote_plus(query)}&language=de"
+    html = fetch_url(suggest_url, session)
     if not html:
         return []
 
-    polite_sleep(0.8)
+    polite_sleep(0.5)
     soup = BeautifulSoup(html, "html.parser")
 
-    # North Data search results show company cards with Geschäftsführer
-    # Pattern: "Geschäftsführer: Max Muster" in company card text
-    role_map = {
-        "geschäftsführer": "Geschäftsführer",
-        "prokurist": "Prokurist",
-        "vorstand": "Vorstand",
-        "inhaber": "Inhaber",
-        "gesellschafter": "Gesellschafter",
-        "gründer": "Gründer",
-        "direktor": "Direktor",
-    }
+    # Find the best matching company link
+    company_keyword = company_name.split()[0].lower()
+    detail_href = None
 
-    text = soup.get_text(separator="\n")
-    lines = text.split("\n")
-
-    for i, line in enumerate(lines):
-        line_lower = line.lower().strip()
-        for role_key, role_label in role_map.items():
-            if role_key in line_lower:
-                # The name is often on the same or next line
-                name_candidates = [line]
-                if i + 1 < len(lines):
-                    name_candidates.append(lines[i + 1])
-
-                for nc in name_candidates:
-                    names = _extract_german_names(nc)
-                    for name in names:
-                        contacts.append({
-                            "full_name": name,
-                            "title": role_label,
-                            "email": None,
-                            "phone": None,
-                            "source": "northdata",
-                        })
-
-    # Also try to get the company detail page
     for a in soup.find_all("a", href=True):
         href = a["href"]
-        if "northdata.com" in href and re.search(r"/[A-Za-z].*?/[A-Za-z]", href):
-            detail_html = fetch_url(href if href.startswith("http") else f"https://www.northdata.com{href}", session)
-            if detail_html and _page_matches_company(detail_html, company_name):
-                detail_contacts = _parse_northdata_detail(detail_html)
-                contacts.extend(detail_contacts)
+        link_text = a.get_text(strip=True)
+        # Must be a company detail link (contains court registry number) and match company name
+        if (company_keyword in link_text.lower() and
+                href.startswith("/") and
+                re.search(r"HRB|HRA|Amtsgericht|AG |CHE-|CVR|KVK", href)):
+            # Prefer matching city if provided
+            if city and city.lower() in link_text.lower():
+                detail_href = href
                 break
-            polite_sleep(0.5)
+            elif not detail_href:
+                detail_href = href
+
+    if not detail_href:
+        # Fallback: first company-ish link
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if href.startswith("/") and company_keyword in a.get_text().lower() and len(href) > 10:
+                detail_href = href
+                break
+
+    if detail_href:
+        detail_url = f"https://www.northdata.de{detail_href}"
+        polite_sleep(0.5)
+        detail_html = fetch_url(detail_url, session)
+        if detail_html:
+            contacts.extend(_parse_northdata_detail_de(detail_html, company_name))
+
+    # Fallback: parse suggest page itself for inline role mentions
+    if not contacts:
+        text = soup.get_text(separator="\n")
+        contacts.extend(_extract_roles_from_text(text))
 
     return _dedupe_contacts(contacts)
 
 
-def _parse_northdata_detail(html: str) -> list[dict]:
-    """Parse a NorthData company detail page for officers."""
+def _parse_northdata_detail_de(html: str, company_name: str) -> list[dict]:
+    """
+    Parse a Northdata.DE company detail page for officers.
+    Northdata formats inline: "Geschäftsführer: Michael Wernicke"
+    """
+    if not _page_matches_company(html, company_name):
+        return []
+
     soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(separator="\n")
+    return _extract_roles_from_text(text)
+
+
+_UI_WORDS = {"Jetzt", "Upgraden", "Premium", "Login", "Anmelden", "Weitere", "Suche", "Mehr"}
+
+_NORTHDATA_ROLE_PATTERNS = [
+    # No re.IGNORECASE so name character class [A-ZÜÖÄ] stays uppercase-only
+    (re.compile(r"Geschäftsführer(?:in)?\s*:?\s*([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+(?: [A-ZÜÖÄ][a-züöäß\-]+)?)", re.MULTILINE), "Geschäftsführer"),
+    (re.compile(r"Prokurist(?:in)?\s*:?\s*([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+(?: [A-ZÜÖÄ][a-züöäß\-]+)?)", re.IGNORECASE | re.MULTILINE), "Prokurist"),
+    (re.compile(r"Vorstand(?:svorsitzender)?\s*:?\s*([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+(?: [A-ZÜÖÄ][a-züöäß\-]+)?)", re.IGNORECASE | re.MULTILINE), "Vorstand"),
+    (re.compile(r"Inhaber(?:in)?\s*:?\s*([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+(?: [A-ZÜÖÄ][a-züöäß\-]+)?)", re.IGNORECASE | re.MULTILINE), "Inhaber"),
+    (re.compile(r"Gesellschafter\s*:?\s*([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+(?: [A-ZÜÖÄ][a-züöäß\-]+)?)", re.IGNORECASE | re.MULTILINE), "Gesellschafter"),
+]
+
+
+def _extract_roles_from_text(text: str) -> list[dict]:
+    """Extract officer role+name pairs from text using Northdata\'s format."""
     contacts = []
+    seen: set[str] = set()
 
-    german_roles = {
-        "Geschäftsführer": 1, "Geschäftsführerin": 1,
-        "Inhaber": 1, "Inhaberin": 1,
-        "Vorstand": 1, "Vorstandsvorsitzender": 1,
-        "Prokurist": 2, "Prokuristin": 2,
-        "Gesellschafter": 1,
-        "Liquidator": 3,
-    }
+    for pattern, role in _NORTHDATA_ROLE_PATTERNS:
+        for match in pattern.finditer(text):
+            name = match.group(1).strip()
+            # Clean soft hyphens and non-breaking spaces that Northdata embeds
+            name = name.replace("\xad", "").replace("\xa0", " ").strip()
+            parts = name.split()
+            if (len(parts) >= 2 and
+                    all(p[0].isupper() for p in parts) and
+                    not any(p in _UI_WORDS for p in parts) and
+                    name not in seen):
+                seen.add(name)
+                contacts.append({
+                    "full_name": name,
+                    "title": role,
+                    "email": None,
+                    "phone": None,
+                    "source": "northdata",
+                })
 
-    for role, _ in german_roles.items():
-        # Find elements containing the role label
-        for el in soup.find_all(string=re.compile(re.escape(role), re.IGNORECASE)):
-            parent = el.find_parent(["div", "li", "tr", "section"])
-            if parent:
-                names = _extract_german_names(parent.get_text(separator=" "))
-                for name in names:
-                    contacts.append({
-                        "full_name": name,
-                        "title": role,
-                        "email": None,
-                        "phone": None,
-                        "source": "northdata_detail",
-                    })
+    return contacts[:5]
 
-    return contacts
+
 
 
 def _scrape_wlw(company_name: str, location: str, session) -> list[dict]:
@@ -312,7 +319,7 @@ def _scrape_11880(company_name: str, location: str, session) -> dict:
 def _extract_german_names(text: str) -> list[str]:
     """Extract German-style names (including umlauts) from text."""
     # German names can contain ä, ö, ü, Ä, Ö, Ü, ß
-    pattern = r"\b([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+(?:\s[A-ZÜÖÄ][a-züöäß\-]+)?)\b"
+    pattern = r"\b([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+(?: [A-ZÜÖÄ][a-züöäß\-]+)?)\b"
     found = re.findall(pattern, text)
 
     # Filter common false positives

@@ -2,12 +2,14 @@ from __future__ import annotations
 """
 Scrape company website for team members, contact info.
 Looks at: /about, /team, /people, /contact, /leadership, /management pages.
+Falls back to Wayback Machine cached versions when the live site blocks access.
 """
 import logging
 import re
+import requests
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
-from utils.http_client import get_session, fetch_url, polite_sleep
+from utils.http_client import get_session, fetch_url, polite_sleep, REQUEST_TIMEOUT
 from utils.domain_finder import extract_email_from_text, extract_phone_from_text
 
 logger = logging.getLogger(__name__)
@@ -58,6 +60,9 @@ def scrape_company_website(domain: str) -> list[dict]:
     for path in TEAM_PAGE_PATHS:
         url = base_url + path
         html = fetch_url(url, session, use_scraper_api=True)
+        # If blocked, try Wayback Machine cached version
+        if not html:
+            html = _fetch_wayback(domain, path)
         if not html:
             continue
         polite_sleep(0.8)
@@ -218,13 +223,27 @@ def _parse_team_page(html: str, domain: str) -> list[dict]:
                 return people
 
     # Last resort: regex scan on plain text
+    _WEBSITE_NON_NAMES = {
+        "unsere", "unser", "ihr", "ihre", "wir", "sie", "das", "der", "die",
+        "service", "kontakt", "support", "team", "kunden", "produkt",
+        "über", "news", "blog", "home", "mehr", "weiter",
+        "our", "the", "your", "contact", "about", "this",
+    }
     text = soup.get_text(separator="\n")
     for pattern in NAME_TITLE_PATTERNS:
         for match in re.finditer(pattern, text):
             name = match.group(1).strip()
             title = match.group(2).strip()
-            if len(name.split()) >= 2 and len(title) > 3:
-                people.append({"full_name": name, "title": title, "email": None, "phone": None, "source": "website_text"})
+            parts = name.split()
+            if len(parts) < 2 or len(title) < 3:
+                continue
+            # Reject if any part is a known non-name word
+            if any(p.lower() in _WEBSITE_NON_NAMES for p in parts):
+                continue
+            # Title should not be extremely long (heading text, not a job title)
+            if len(title) > 60:
+                continue
+            people.append({"full_name": name, "title": title, "email": None, "phone": None, "source": "website_text"})
 
     return people
 
@@ -242,6 +261,45 @@ def _extract_schema_person(data: dict) -> dict | None:
         "phone": data.get("telephone"),
         "source": "website_schema",
     }
+
+
+def _fetch_wayback(domain: str, path: str) -> str | None:
+    """
+    Fetch a cached version of a URL from the Wayback Machine.
+    Used when the live website blocks access (CloudFront 403, etc.)
+
+    Returns the most recent archived HTML, or None if not available.
+    """
+    url = f"https://{domain}{path}"
+    try:
+        # Ask Wayback if they have this URL
+        check_resp = requests.get(
+            "https://archive.org/wayback/available",
+            params={"url": url},
+            timeout=8,
+        )
+        if check_resp.status_code != 200:
+            return None
+
+        data = check_resp.json()
+        snapshot = data.get("archived_snapshots", {}).get("closest", {})
+        if not snapshot.get("available"):
+            return None
+
+        snapshot_url = snapshot.get("url", "")
+        if not snapshot_url:
+            return None
+
+        # Fetch the archived version
+        resp = requests.get(snapshot_url, timeout=REQUEST_TIMEOUT)
+        if resp.status_code == 200:
+            logger.debug(f"Wayback Machine hit: {snapshot_url}")
+            return resp.text
+
+    except Exception as e:
+        logger.debug(f"Wayback Machine error for {url}: {e}")
+
+    return None
 
 
 def _extract_person_from_card(card) -> dict | None:

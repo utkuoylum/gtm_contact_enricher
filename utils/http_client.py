@@ -12,6 +12,55 @@ from config import USER_AGENTS, REQUEST_TIMEOUT, MAX_RETRIES, SCRAPER_API_KEY
 logger = logging.getLogger(__name__)
 
 
+_BROWSER_HEADER_SETS = [
+    # Chrome 124 on macOS — bypasses most CloudFront WAFs
+    {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate",
+        "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"macOS"',
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "none",
+        "sec-fetch-user": "?1",
+        "upgrade-insecure-requests": "1",
+        "cache-control": "max-age=0",
+    },
+    # Firefox 125 on Windows
+    {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "de,en-US;q=0.7,en;q=0.3",
+        "Accept-Encoding": "gzip, deflate",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "DNT": "1",
+    },
+    # Chrome 124 on Windows
+    {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate",
+        "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "none",
+        "sec-fetch-user": "?1",
+        "upgrade-insecure-requests": "1",
+    },
+]
+
+
 def get_session() -> requests.Session:
     session = requests.Session()
     retry = Retry(
@@ -23,32 +72,49 @@ def get_session() -> requests.Session:
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
-    session.headers.update({
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9,de;q=0.7",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-        "DNT": "1",
-    })
+    session.headers.update(random.choice(_BROWSER_HEADER_SETS))
     return session
 
 
 def fetch_url(url: str, session: requests.Session = None, use_scraper_api: bool = False) -> str | None:
-    """Fetch URL. Falls back to ScraperAPI on block (403/429/503)."""
+    """
+    Fetch URL with automatic fallback chain:
+    1. Current session headers
+    2. Rotate to a different browser header set (bypasses basic WAF rules)
+    3. ScraperAPI (if key configured)
+    """
     _session = session or get_session()
     try:
         resp = _session.get(url, timeout=REQUEST_TIMEOUT)
         if resp.status_code == 200:
             return resp.text
-        if resp.status_code in (403, 429, 503) and SCRAPER_API_KEY:
-            return _fetch_via_scraper_api(url)
         if resp.status_code in (403, 429, 503):
+            # Try a different browser header set before giving up
+            retry_result = _fetch_with_rotated_headers(url)
+            if retry_result:
+                return retry_result
+            if SCRAPER_API_KEY:
+                return _fetch_via_scraper_api(url)
             logger.debug(f"Blocked ({resp.status_code}): {url}")
     except requests.RequestException as e:
         logger.debug(f"Request error for {url}: {e}")
+        retry_result = _fetch_with_rotated_headers(url)
+        if retry_result:
+            return retry_result
         if SCRAPER_API_KEY and use_scraper_api:
             return _fetch_via_scraper_api(url)
+    return None
+
+
+def _fetch_with_rotated_headers(url: str) -> str | None:
+    """Retry with a fresh session using a different browser header set."""
+    for header_set in _BROWSER_HEADER_SETS:
+        try:
+            resp = requests.get(url, headers=header_set, timeout=REQUEST_TIMEOUT)
+            if resp.status_code == 200:
+                return resp.text
+        except requests.RequestException:
+            continue
     return None
 
 

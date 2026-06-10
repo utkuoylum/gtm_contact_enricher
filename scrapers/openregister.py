@@ -1,30 +1,71 @@
 from __future__ import annotations
 """
-OpenRegister.de + OffeneRegister.de — German commercial register sources.
+OpenRegister.de + OffeneRegister.de + SERP-based German officer search.
 
-OpenRegister.de:
-  - 4M+ Alman şirketi
-  - Yönetim (Geschäftsführer, Vorstand, Prokurist) + ortaklık yapısı
-  - İlk 50 sorgu ücretsiz (OPENREGISTER_API_KEY env var)
-  - Kayıt gerektirmeden de bazı veriler döner
-
-OffeneRegister SQL API:
-  - 5M+ Alman şirketi (CC-BY lisanslı)
-  - Ücretsiz SQL benzeri sorgu API'si (CORS açık)
-  - Geschäftsführer adları ve pozisyonları
+Sources (priority order):
+  1. SERP snippet mining — search "[company] Geschäftsführer" on DuckDuckGo/Bing.
+     Most reliable: snippets almost always name the GF for German companies.
+  2. OffeneRegister Datasette API (free, 5M+ companies, CC-BY)
+  3. OpenRegister.de API (requires OPENREGISTER_API_KEY)
+  4. Northdata.com web scraping (Handelsregister + Bundesanzeiger aggregator)
 """
 import os
 import re
 import logging
 import requests
-from utils.http_client import REQUEST_TIMEOUT, polite_sleep, get_session, fetch_url
 from bs4 import BeautifulSoup
+from urllib.parse import quote_plus
+from utils.http_client import REQUEST_TIMEOUT, polite_sleep, get_session, fetch_url, multi_engine_search
 
 logger = logging.getLogger(__name__)
 
 OPENREGISTER_API_KEY = os.getenv("OPENREGISTER_API_KEY", "")
 OPENREGISTER_BASE = "https://api.openregister.de"
-OFFENEREGISTER_API = "https://api.offeneregister.de"
+# OffeneRegister Datasette endpoint (free, CC-BY licensed, 5M+ German companies)
+OFFENEREGISTER_DATASETTE = "https://db.offeneregister.de"
+
+_GERMAN_OFFICER_ROLES = [
+    ("Geschäftsführer", "Geschäftsführer"),
+    ("Geschäftsführerin", "Geschäftsführerin"),
+    ("Inhaber", "Inhaber"),
+    ("Inhaberin", "Inhaberin"),
+    ("Prokurist", "Prokurist"),
+    ("Prokuristin", "Prokuristin"),
+    ("Vorstand", "Vorstand"),
+    ("Gesellschafter", "Gesellschafter"),
+    ("Gründer", "Gründer"),
+    ("Eigentümer", "Eigentümer"),
+    ("Managing Director", "Managing Director"),
+]
+
+# Regex patterns to extract Name+Role pairs from SERP snippets
+_SNIPPET_PATTERNS = [
+    # "Geschäftsführer: Max Müller"
+    r"(?:Gesch[äa]ftsf[üu]hrer(?:in)?|Inhaber(?:in)?|Prokurist(?:in)?|Vorstand|Gesellschafter|Eigent[üu]mer)"
+    r"\s*[:\-–]\s*"
+    r"([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+(?: [A-ZÜÖÄ][a-züöäß\-]+)?)",
+    # "Max Müller (Geschäftsführer)" or "Max Müller, Geschäftsführer"
+    r"([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+(?: [A-ZÜÖÄ][a-züöäß\-]+)?)"
+    r"\s*[,\(]?\s*"
+    r"(?:Gesch[äa]ftsf[üu]hrer(?:in)?|Inhaber(?:in)?|Prokurist(?:in)?|CEO|Managing Director)",
+    # "von Geschäftsführer Max Müller" or "CEO Max Müller"
+    r"(?:CEO|CTO|CFO|COO|Managing Director|Geschäftsführer)\s+"
+    r"([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+(?: [A-ZÜÖÄ][a-züöäß\-]+)?)",
+]
+
+# These words should NOT appear as name components (includes German roles, boolean ops)
+_NON_NAME_WORDS = {
+    "gmbh", "ag", "kg", "ug", "srl", "ltd", "inc", "und", "der", "die", "das",
+    "mit", "von", "zur", "beim", "für", "über", "mehr", "info", "kontakt",
+    "service", "support", "team", "news", "blog", "jobs", "karriere",
+    # German officer titles (appear in query text, not names)
+    "inhaber", "inhaberin", "prokurist", "prokuristin", "vorstand",
+    "geschäftsführer", "gesellschafter", "gründer", "eigentümer",
+    # Boolean operators and query keywords
+    "or", "and", "not", "in", "site", "mailto",
+    # UI words
+    "jetzt", "upgraden", "premium", "login", "anmelden", "weitere",
+}
 
 
 def find_german_register_officers(company_name: str, location: str = "") -> list[dict]:
@@ -33,61 +74,185 @@ def find_german_register_officers(company_name: str, location: str = "") -> list
     Returns list of {full_name, title, source} dicts.
     """
     contacts = []
+    seen_names: set[str] = set()
 
-    # 1. OffeneRegister (free, no key, 5M+ companies)
-    off_contacts = _query_offeneregister(company_name, location)
-    contacts.extend(off_contacts)
-
-    # 2. OpenRegister (50 free calls with key, broader data)
-    if OPENREGISTER_API_KEY and len(contacts) < 3:
-        or_contacts = _query_openregister(company_name, location)
-        existing_names = {c["full_name"].lower() for c in contacts}
-        for c in or_contacts:
-            if c["full_name"].lower() not in existing_names:
+    def _add(new_contacts: list[dict]):
+        for c in new_contacts:
+            key = c.get("full_name", "").lower()
+            if key and key not in seen_names and len(key.split()) >= 2:
+                seen_names.add(key)
                 contacts.append(c)
 
-    # 3. Northdata web fallback
-    if not contacts:
-        nd_contacts = _scrape_northdata_suggest(company_name)
-        contacts.extend(nd_contacts)
+    # 1. SERP snippet mining (might be blocked locally, always reliable on VPS)
+    _add(_serp_search_german_officers(company_name, location))
+
+    # 2. OffeneRegister via Datasette
+    if len(contacts) < 3:
+        _add(_query_offeneregister_datasette(company_name, location))
+
+    # 3. OpenRegister (requires API key)
+    if OPENREGISTER_API_KEY and len(contacts) < 3:
+        _add(_query_openregister(company_name, location))
+
+    # 4. Northdata — always run as it's the most reliable free German source
+    _add(_scrape_northdata_suggest(company_name))
 
     return contacts
 
 
-def _query_offeneregister(company_name: str, location: str) -> list[dict]:
+def _serp_search_german_officers(company_name: str, location: str) -> list[dict]:
     """
-    OffeneRegister SQL API (free, CORS-enabled).
-    Endpoint: https://api.offeneregister.de/companies?name=...
+    Mine SERP snippets for German officer names.
+    "Wenatex Geschäftsführer" → snippet usually says "Max Müller, Geschäftsführer"
     """
     contacts = []
-    city = location.split(",")[0].strip() if location else ""
+    session = get_session()
 
+    queries = [
+        f'"{company_name}" Geschäftsführer',
+        f'"{company_name}" Inhaber OR Prokurist OR Vorstand',
+        f'{company_name} site:northdata.com OR site:handelsregister.de OR site:unternehmensregister.de',
+    ]
+
+    for query in queries[:2]:  # First 2 are most reliable
+        html = multi_engine_search(query, session)
+        if not html:
+            polite_sleep(0.5)
+            continue
+
+        polite_sleep(0.5)
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Collect all text snippets from search results
+        snippets: list[str] = []
+        for el in soup.find_all(["div", "p", "span", "li"]):
+            text = el.get_text(separator=" ", strip=True)
+            # Only process snippets that mention the company
+            company_keyword = company_name.split()[0].lower()
+            if company_keyword in text.lower() and 30 < len(text) < 500:
+                snippets.append(text)
+
+        # Also process all text for cross-snippet patterns
+        full_text = soup.get_text(separator="\n")
+        snippets.append(full_text)
+
+        role_found: dict[str, str] = {}
+
+        for snippet in snippets:
+            for pattern in _SNIPPET_PATTERNS:
+                for match in re.finditer(pattern, snippet, re.IGNORECASE):
+                    name = match.group(1).strip() if match.lastindex >= 1 else ""
+                    if not name:
+                        continue
+                    if _is_valid_german_name(name):
+                        # Determine role from surrounding context
+                        role = _role_from_context(snippet, name)
+                        key = name.lower()
+                        if key not in role_found:
+                            role_found[key] = role or "Geschäftsführer"
+                            contacts.append({
+                                "full_name": name,
+                                "title": role or "Geschäftsführer",
+                                "email": None,
+                                "phone": None,
+                                "source": "german_serp",
+                            })
+
+        if contacts:
+            break  # Found names, no need for more queries
+
+    return contacts[:5]
+
+
+def _is_valid_german_name(name: str) -> bool:
+    """Validate that extracted text looks like a German person name."""
+    parts = name.strip().split()
+    if len(parts) < 2 or len(parts) > 4:
+        return False
+    for part in parts:
+        if not part[0].isupper():
+            return False
+        # Must be mostly alphabetic (allow hyphens, umlauts)
+        if not re.match(r"^[A-Za-zÄÖÜäöüß\-'\.]+$", part):
+            return False
+        if part.lower() in _NON_NAME_WORDS:
+            return False
+        if len(part) < 2 or len(part) > 30:
+            return False
+    return True
+
+
+def _role_from_context(text: str, name: str) -> str | None:
+    idx = text.lower().find(name.lower())
+    if idx == -1:
+        context = text[:200]
+    else:
+        context = text[max(0, idx - 50): idx + len(name) + 80]
+
+    for role_key, role_label in _GERMAN_OFFICER_ROLES:
+        if role_key.lower() in context.lower():
+            return role_label
+    return None
+
+
+def _query_offeneregister_datasette(company_name: str, location: str) -> list[dict]:
+    """
+    OffeneRegister via Datasette API (free, CC-BY).
+    Datasette endpoint: https://db.offeneregister.de/
+    """
+    contacts = []
     try:
-        params = {"name": company_name}
-        if city:
-            params["registered_address"] = city
-
+        # Datasette full-text search
         resp = requests.get(
-            f"{OFFENEREGISTER_API}/companies",
-            params=params,
-            timeout=REQUEST_TIMEOUT,
+            f"{OFFENEREGISTER_DATASETTE}/offeneregister/company.json",
+            params={"_search": company_name, "_size": 5},
+            timeout=10,
             headers={"Accept": "application/json", "User-Agent": "ContactEnrichmentBot/1.0"},
         )
 
         if resp.status_code == 200:
             data = resp.json()
-            companies = data if isinstance(data, list) else data.get("results", [])
+            rows = data.get("rows", [])
+            columns = data.get("columns", [])
 
-            for company in companies[:3]:
-                officers = company.get("officers", [])
-                for officer in officers:
-                    name = officer.get("name", "")
-                    if not name or len(name.split()) < 2:
-                        continue
-                    position = officer.get("position", "Geschäftsführer")
-                    # Skip resigned/historical
-                    if officer.get("end_date"):
-                        continue
+            for row in rows[:3]:
+                row_dict = dict(zip(columns, row)) if columns else row
+                name_raw = row_dict.get("name", "") or row_dict.get("company_name", "")
+                if not name_raw:
+                    continue
+                # Get officers via related endpoint
+                company_id = row_dict.get("id") or row_dict.get("company_id")
+                if company_id:
+                    officers = _get_offeneregister_officers(company_id)
+                    contacts.extend(officers)
+                    if contacts:
+                        break
+
+    except Exception as e:
+        logger.debug(f"OffeneRegister Datasette error: {e}")
+
+    return contacts
+
+
+def _get_offeneregister_officers(company_id: str) -> list[dict]:
+    """Get officers for a specific company from OffeneRegister."""
+    contacts = []
+    try:
+        resp = requests.get(
+            f"{OFFENEREGISTER_DATASETTE}/offeneregister/officer.json",
+            params={"company_id": company_id, "_size": 10},
+            timeout=10,
+            headers={"Accept": "application/json"},
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            rows = data.get("rows", [])
+            columns = data.get("columns", [])
+            for row in rows:
+                row_dict = dict(zip(columns, row)) if columns else row
+                name = row_dict.get("name", "")
+                position = row_dict.get("position", "Geschäftsführer")
+                if name and len(name.split()) >= 2:
                     contacts.append({
                         "full_name": _fix_german_name(name),
                         "title": _translate_german_position(position),
@@ -95,13 +260,14 @@ def _query_offeneregister(company_name: str, location: str) -> list[dict]:
                         "phone": None,
                         "source": "offeneregister",
                     })
-                if contacts:
-                    break
-
     except Exception as e:
-        logger.debug(f"OffeneRegister error: {e}")
-
+        logger.debug(f"OffeneRegister officers error: {e}")
     return contacts
+
+
+def _query_offeneregister(company_name: str, location: str) -> list[dict]:
+    """Legacy: kept for compatibility, now delegates to Datasette."""
+    return _query_offeneregister_datasette(company_name, location)
 
 
 def _query_openregister(company_name: str, location: str) -> list[dict]:
@@ -167,57 +333,71 @@ def _query_openregister(company_name: str, location: str) -> list[dict]:
 
 def _scrape_northdata_suggest(company_name: str) -> list[dict]:
     """
-    Northdata.com suggest endpoint — free autocomplete API.
-    Returns company names + basic info including officer names in some cases.
+    Northdata two-step approach:
+    1. Use suggest API to find the company detail URL
+    2. Scrape the German detail page (northdata.de) which shows Geschäftsführer
     """
     contacts = []
     session = get_session()
 
     try:
+        # Step 1: Suggest API — find company slug
         resp = requests.get(
-            "https://www.northdata.com/_api/v1/suggest",
+            "https://www.northdata.de/_api/v1/suggest",
             params={"query": company_name, "language": "de"},
             headers={
-                "Accept": "application/json",
-                "User-Agent": "Mozilla/5.0 (compatible; ContactEnrichment/1.0)",
-                "Referer": "https://www.northdata.com/",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "de-DE,de;q=0.9",
+                "Accept-Encoding": "gzip, deflate",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             },
             timeout=REQUEST_TIMEOUT,
         )
 
         if resp.status_code == 200:
-            suggestions = resp.json()
-            for item in suggestions[:3]:
-                # Some suggestions include person names
-                if item.get("type") == "person":
-                    name = item.get("name", "")
-                    company = item.get("company", "")
-                    role = item.get("role", "")
-                    if name and len(name.split()) >= 2:
-                        contacts.append({
-                            "full_name": _fix_german_name(name),
-                            "title": _translate_german_position(role) if role else "Geschäftsführer",
-                            "email": None,
-                            "phone": None,
-                            "source": "northdata_suggest",
-                        })
+            soup = BeautifulSoup(resp.text, "html.parser")
+            company_keyword = company_name.split()[0].lower()
+
+            # Find the matching company link
+            detail_url = None
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                link_text = a.get_text(strip=True)
+                # Must match company name AND be a registry detail URL
+                if (company_keyword in link_text.lower() and
+                        href.startswith("/") and
+                        re.search(r"HRB|HRA|Amtsgericht|CHE-|CVR|KVK|040688|143199|207322", href)):
+                    detail_url = f"https://www.northdata.de{href}"
+                    break
+
+            if detail_url:
+                polite_sleep(0.8)
+                contacts = _scrape_northdata_web(company_name, detail_url, session)
+
     except Exception as e:
         logger.debug(f"Northdata suggest error: {e}")
 
-    # Fallback: scrape Northdata search page
+    # Fallback: try direct URL construction
     if not contacts:
-        contacts = _scrape_northdata_web(company_name, session)
+        contacts = _scrape_northdata_web(company_name, None, session)
 
     return contacts
 
 
-def _scrape_northdata_web(company_name: str, session) -> list[dict]:
-    """Scrape Northdata.com search results page (pre-rendered HTML)."""
-    from urllib.parse import quote_plus
+def _scrape_northdata_web(company_name: str, detail_url: str | None, session) -> list[dict]:
+    """
+    Scrape Northdata.de company detail page.
+    The German version shows Geschäftsführer inline in the page text.
+    """
     contacts = []
 
-    url = f"https://www.northdata.com/search?q={quote_plus(company_name)}&language=de"
-    html = fetch_url(url, session)
+    if detail_url:
+        html = fetch_url(detail_url, session)
+    else:
+        # Fallback: search page
+        search_url = f"https://www.northdata.de/_api/v1/suggest?query={quote_plus(company_name)}&language=de"
+        html = fetch_url(search_url, session)
+
     if not html:
         return []
 
@@ -225,18 +405,29 @@ def _scrape_northdata_web(company_name: str, session) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text(separator="\n")
 
-    # Pattern: role label followed by name on same or next line
+    # Pattern: "Geschäftsführer: Michael Wernicke" — exactly how Northdata formats it
     role_patterns = [
-        (r"Gesch[äa]ftsf[üu]hrer(?:in)?\s*:?\s*([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+)", "Geschäftsführer"),
-        (r"Prokurist(?:in)?\s*:?\s*([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+)", "Prokurist"),
-        (r"Vorstand\s*:?\s*([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+)", "Vorstand"),
-        (r"Inhaber(?:in)?\s*:?\s*([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+)", "Inhaber"),
+        (r"Gesch[äa]ftsf[üu]hrer(?:in)?\s*:?\s*([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+(?: [A-ZÜÖÄ][a-züöäß\-]+)?)", "Geschäftsführer"),
+        (r"Prokurist(?:in)?\s*:?\s*([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+(?: [A-ZÜÖÄ][a-züöäß\-]+)?)", "Prokurist"),
+        (r"Vorstand\s*:?\s*([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+(?: [A-ZÜÖÄ][a-züöäß\-]+)?)", "Vorstand"),
+        (r"Inhaber(?:in)?\s*:?\s*([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+(?: [A-ZÜÖÄ][a-züöäß\-]+)?)", "Inhaber"),
+        (r"Aktuelle[r]? gesetzliche[r]? Vertreter\s*\n\s*Gesch[äa]ftsf[üu]hrer(?:in)?\s*\n\s*([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+)", "Geschäftsführer"),
     ]
 
+    seen: set[str] = set()
+    _UI_WORDS = {"Jetzt", "Upgraden", "Premium", "Login", "Anmelden", "Weitere", "Suche", "Mehr"}
     for pattern, role in role_patterns:
-        for match in re.finditer(pattern, text, re.IGNORECASE):
+        # No IGNORECASE so [A-ZÜÖÄ] stays uppercase-only (prevents "Jetzt upgraden" false positive)
+        for match in re.finditer(pattern, text, re.MULTILINE):
             name = match.group(1).strip()
-            if len(name.split()) >= 2:
+            # Clean soft hyphens and non-breaking spaces that Northdata uses
+            name = name.replace("\xad", "").replace("\xa0", " ").strip()
+            parts = name.split()
+            if (len(parts) >= 2 and
+                    all(p[0].isupper() for p in parts) and
+                    not any(p in _UI_WORDS for p in parts) and
+                    name not in seen):
+                seen.add(name)
                 contacts.append({
                     "full_name": name,
                     "title": role,
