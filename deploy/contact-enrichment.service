@@ -1,0 +1,17 @@
+[Unit]
+Description=Contact Enrichment Webhook
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/contact-enrichment
+EnvironmentFile=/opt/contact-enrichment/.env
+ExecStart=/opt/contact-enrichment/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
