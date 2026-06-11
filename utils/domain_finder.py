@@ -72,7 +72,7 @@ def find_company_domain(company_name: str, location: str = "") -> str | None:
         f'"{company_name}" {location} Kontakt' if location else f'"{company_name}" Kontakt Impressum',
         f'"{company_name}" {location} website' if location else f'"{company_name}" website',
     ]:
-        domain = _search_google_for_domain(query, company_name)
+        domain = _search_google_for_domain(query, company_name, location)
         if domain:
             if domain not in candidates_from_search:
                 candidates_from_search.append(domain)
@@ -166,7 +166,7 @@ def _build_slug_candidates(company_name: str) -> list[str]:
     return candidates
 
 
-def _search_google_for_domain(query: str, company_name: str) -> str | None:
+def _search_google_for_domain(query: str, company_name: str, location: str = "") -> str | None:
     session = get_session()
     html = multi_engine_search(query, session)
     if not html:
@@ -174,12 +174,23 @@ def _search_google_for_domain(query: str, company_name: str) -> str | None:
 
     polite_sleep(0.5)
     soup = BeautifulSoup(html, "html.parser")
+    serp_text = soup.get_text(separator=" ")
 
-    # Extract all hrefs and find organic result URLs
+    # --- Claude-first: ask Claude to identify the domain from the SERP text ---
+    try:
+        from utils.claude_extractor import find_domain_from_serp, claude_available
+        if claude_available():
+            claude_domain = find_domain_from_serp(company_name, location, serp_text)
+            if claude_domain and _domain_resolves(claude_domain):
+                logger.debug(f"Claude SERP domain: {claude_domain}")
+                return claude_domain
+    except Exception:
+        pass
+
+    # --- Fallback: regex slug matching ---
     seen = set()
     # Use first-word slug for matching — more reliable for "Wenatex Das Schlafsystem GmbH"
     slug_candidates_list = _build_slug_candidates(company_name)
-    primary_slug = slug_candidates_list[0] if slug_candidates_list else _clean_slug(company_name)
 
     for a in soup.find_all("a", href=True):
         href = a["href"]

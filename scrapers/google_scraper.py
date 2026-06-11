@@ -45,19 +45,50 @@ def google_contact_search(company_name: str, location: str = "", domain: str = "
     session = get_session()
     seen: set[str] = set()
 
+    # Lazy import to avoid circular imports
+    try:
+        from utils.claude_extractor import extract_contacts_from_serp, claude_available
+        _claude_ok = claude_available()
+    except Exception:
+        extract_contacts_from_serp = None  # type: ignore[assignment]
+        _claude_ok = False
+
     queries = _build_queries(company_name, location, domain)
 
     for query in queries:
         html = multi_engine_search(query, session)
         if not html:
             continue
-        new_contacts = _extract_contacts_from_serp(html, company_name, domain)
-        for c in new_contacts:
+
+        soup = BeautifulSoup(html, "html.parser")
+        serp_text = soup.get_text(separator=" ")
+
+        # --- Claude primary extraction ---
+        claude_contacts: list[dict] = []
+        if _claude_ok and extract_contacts_from_serp is not None:
+            try:
+                claude_contacts = extract_contacts_from_serp(serp_text, company_name, location)
+            except Exception:
+                claude_contacts = []
+
+        # --- Regex supplementary extraction ---
+        regex_contacts = _extract_contacts_from_serp(html, company_name, domain)
+
+        # Merge: Claude first, then regex results not already seen by name
+        claude_names = {c.get("full_name", "").lower() for c in claude_contacts if c.get("full_name")}
+        combined = claude_contacts + [c for c in regex_contacts if c.get("full_name", "").lower() not in claude_names]
+
+        for c in combined:
             key = c.get("full_name", "").lower()
             if key and key not in seen:
                 seen.add(key)
                 contacts.append(c)
+
         polite_sleep(1.2)
+
+        # If Claude already found enough contacts, skip remaining queries
+        if _claude_ok and len([c for c in contacts if c.get("source") == "claude_serp"]) >= 3:
+            break
         if len(contacts) >= 10:
             break
 

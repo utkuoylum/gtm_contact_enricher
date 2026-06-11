@@ -156,6 +156,29 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
     deduped = _deduplicate(raw_contacts)
     logger.info(f"After dedup: {len(deduped)} people")
 
+    # 4b. Claude synthesis: validate contacts and remove false positives
+    if deduped:
+        try:
+            from utils.claude_extractor import synthesize_contacts, claude_available
+            if claude_available():
+                contacts_for_claude = [
+                    {"full_name": c.get("full_name", ""), "title": c.get("title"),
+                     "email": c.get("email"), "source": c.get("source", "")}
+                    for c in deduped
+                ]
+                cleaned = synthesize_contacts(contacts_for_claude, company_name, location)
+                if cleaned:
+                    # Merge cleaned data back: update title/full_name but keep all original fields
+                    cleaned_map = {c.get("full_name", "").lower(): c for c in cleaned}
+                    surviving_names = {c.get("full_name", "").lower() for c in cleaned}
+                    deduped = [
+                        {**c, "title": cleaned_map.get(c.get("full_name", "").lower(), {}).get("title", c.get("title"))}
+                        for c in deduped
+                        if c.get("full_name", "").lower() in surviving_names
+                    ]
+        except Exception as e:
+            errors.append(f"claude_synthesis: {e}")
+
     # 5. Enrich each person with email (using our own hunter)
     if domain:
         _enrich_emails_with_hunter(deduped, domain, pattern, hunt_result, errors)

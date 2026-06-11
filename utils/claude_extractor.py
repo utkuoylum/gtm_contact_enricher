@@ -210,3 +210,197 @@ def parse_impressum_with_claude(html_text: str, company_name: str = "") -> list[
     Only called when the regex-based _parse_impressum() returns 0 results.
     """
     return extract_contacts_from_text(html_text, company_name, source_hint="impressum")
+
+
+# ── SERP domain finder ─────────────────────────────────────────────────────────
+
+_SERP_DOMAIN_SYSTEM = (
+    "You are a company domain researcher. Return ONLY the bare domain (e.g. 'parkplaza.com'). "
+    "No explanation. If unsure return null."
+)
+
+_SERP_DOMAIN_RE = re.compile(r"^[a-z0-9][a-z0-9\-\.]+\.[a-z]{2,}$")
+
+
+def find_domain_from_serp(
+    company_name: str,
+    location: str,
+    serp_text: str,
+) -> Optional[str]:
+    """
+    Ask Claude to identify the official company domain from SERP text.
+
+    Returns a bare domain like 'parkplaza.com', or None if uncertain.
+    Cost: ~1000 input + ~20 output tokens.
+    """
+    if not claude_available():
+        return None
+
+    user_msg = (
+        f"Company: {company_name}\nLocation: {location}\n\n"
+        f"Search results:\n{serp_text[:4000]}"
+    )
+
+    try:
+        resp = _client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=80,
+            system=_SERP_DOMAIN_SYSTEM,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        raw = resp.content[0].text.strip().lower()
+        logger.debug(
+            f"Claude find_domain_from_serp: raw={raw!r} "
+            f"({resp.usage.input_tokens} in / {resp.usage.output_tokens} out)"
+        )
+        # Claude may return "null" / "none" / empty when unsure
+        if not raw or raw in ("null", "none", "n/a"):
+            return None
+        # Strip accidental URL scheme or www prefix
+        raw = re.sub(r"^https?://", "", raw).lstrip("www.").rstrip("/")
+        if _SERP_DOMAIN_RE.match(raw):
+            return raw
+    except Exception as e:
+        logger.debug(f"Claude find_domain_from_serp error: {e}")
+
+    return None
+
+
+# ── SERP contact extractor ─────────────────────────────────────────────────────
+
+_SERP_CONTACT_SYSTEM = (
+    "You are a contact data extractor for B2B sales intelligence. "
+    "From search result snippets, extract names and job titles of people who work at the given company. "
+    "Focus on: CEOs, founders, managing directors, HR directors, HR managers, recruiters. "
+    "Return a JSON array of objects: [{full_name, title, email}]. "
+    "email can be null. "
+    "Only include people clearly at this specific company. "
+    "Return [] if none found. "
+    "Return ONLY valid JSON, no explanation."
+)
+
+
+def extract_contacts_from_serp(
+    serp_text: str,
+    company_name: str,
+    location: str = "",
+) -> list[dict]:
+    """
+    Ask Claude to extract named decision-makers from SERP text.
+
+    Returns a list of contact dicts with keys: full_name, title, email,
+    source="claude_serp", year_found=None, phone=None.
+    """
+    if not claude_available():
+        return []
+
+    user_msg = (
+        f"Company: {company_name}\nLocation: {location}\n\n"
+        f"Search result text:\n{serp_text[:5000]}"
+    )
+
+    try:
+        resp = _client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1500,
+            system=_SERP_CONTACT_SYSTEM,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        raw = resp.content[0].text.strip()
+        logger.debug(
+            f"Claude extract_contacts_from_serp: "
+            f"{resp.usage.input_tokens} in / {resp.usage.output_tokens} out"
+        )
+
+        # Strip markdown fences
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list):
+            return []
+
+        contacts = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            name = (item.get("full_name") or "").strip()
+            if not name or len(name) < 4:
+                continue
+            contacts.append({
+                "full_name": name,
+                "title": item.get("title") or None,
+                "email": item.get("email") or None,
+                "phone": None,
+                "source": "claude_serp",
+                "year_found": None,
+            })
+        return contacts
+
+    except json.JSONDecodeError as e:
+        logger.debug(f"Claude extract_contacts_from_serp non-JSON: {e}")
+    except Exception as e:
+        logger.warning(f"Claude API error in extract_contacts_from_serp: {e}")
+
+    return []
+
+
+# ── Contact synthesizer / quality controller ───────────────────────────────────
+
+_SYNTHESIZE_SYSTEM = (
+    "You are a contact data quality controller for B2B sales. "
+    "Review this contact list found for a company. "
+    "REMOVE: people not clearly at this company, company names used as person names, "
+    "entries with no real name. "
+    "NORMALIZE: standardize job titles (keep German if German company). "
+    "Return cleaned list as JSON array with SAME fields as input. "
+    "Return ONLY valid JSON."
+)
+
+
+def synthesize_contacts(
+    contacts: list[dict],
+    company_name: str,
+    location: str = "",
+) -> list[dict]:
+    """
+    Post-process all found contacts: remove false positives, normalize titles.
+
+    Takes a list of raw contact dicts (up to 25), returns the cleaned list.
+    On any error returns the original contacts unchanged.
+    """
+    if not claude_available() or not contacts:
+        return contacts
+
+    user_msg = (
+        f"Company: {company_name}\nLocation: {location}\n\n"
+        f"Contacts:\n{json.dumps(contacts[:25], ensure_ascii=False)}"
+    )
+
+    try:
+        resp = _client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=3000,
+            system=_SYNTHESIZE_SYSTEM,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        raw = resp.content[0].text.strip()
+        logger.debug(
+            f"Claude synthesize_contacts: "
+            f"{resp.usage.input_tokens} in / {resp.usage.output_tokens} out"
+        )
+
+        # Strip markdown fences
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return parsed
+    except json.JSONDecodeError as e:
+        logger.debug(f"Claude synthesize_contacts non-JSON: {e}")
+    except Exception as e:
+        logger.warning(f"Claude API error in synthesize_contacts: {e}")
+
+    # On any error return original unchanged
+    return contacts
