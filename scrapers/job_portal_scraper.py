@@ -15,9 +15,12 @@ These are direct HR/recruiting contacts with authority to screen candidates.
 """
 import re
 import logging
+from datetime import date
 from urllib.parse import quote_plus, unquote
 from bs4 import BeautifulSoup
 from utils.http_client import get_session, fetch_url, fetch_with_jina, polite_sleep, multi_engine_search
+
+_CURRENT_YEAR = date.today().year
 from utils.domain_finder import extract_email_from_text, extract_phone_from_text
 
 logger = logging.getLogger(__name__)
@@ -366,6 +369,7 @@ def _extract_from_text(text: str, company_name: str) -> list[dict]:
                     "email": None,
                     "phone": None,
                     "source": "linkedin_jobs",
+                    "year_found": _CURRENT_YEAR,  # active job posting → person is there now
                 })
 
     for pattern in _CONTACT_PATTERNS:
@@ -381,6 +385,7 @@ def _extract_from_text(text: str, company_name: str) -> list[dict]:
                 "email": None,
                 "phone": None,
                 "source": "job_portal",
+                "year_found": _CURRENT_YEAR,  # active job posting → person is there now
             })
 
     return contacts

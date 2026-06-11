@@ -40,6 +40,8 @@ class Contact(BaseModel):
     source: str
     rating: int = Field(ge=1, le=5)
     rating_reason: str
+    data_year: Optional[int] = None      # year the data was sourced (from press release date, snippet, etc.)
+    recency_note: Optional[str] = None   # human-readable explanation of recency adjustment
 
 
 class EnrichmentRequest(BaseModel):

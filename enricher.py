@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as
 
 from models import Contact, PhoneDetail, EnrichmentResult
 from utils.domain_finder import find_company_domain
-from utils.rater import rate_contact
+from utils.rater import rate_contact, recency_adjustment
 from scrapers.website_scraper import scrape_company_website
 from scrapers.linkedin_scraper import search_linkedin_contacts
 from scrapers.google_scraper import google_contact_search, scrape_crunchbase_people
@@ -192,6 +192,8 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
     contacts = []
     for raw in deduped:
         rating, reason = rate_contact(raw.get("title"), job_category)
+        rec_adj, rec_note = recency_adjustment(raw.get("source", ""), raw.get("year_found"))
+
         email = raw.get("email")
         smtp_status = verified_email_map.get(email) if email else None
         email_verified = (smtp_status in ("valid", "catch_all")) if smtp_status else None
@@ -205,7 +207,6 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
             company=company_name,
             email=email,
             email_verified=email_verified,
-            # Company main number as fallback; individual phone from scraper if richer
             phone=company_phone_str,
             phone_detail=company_phone_detail,
             direct_phone=direct_info[0] if direct_info else None,
@@ -214,10 +215,19 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
             source=raw.get("source", "unknown"),
             rating=rating,
             rating_reason=reason,
+            data_year=raw.get("year_found"),
+            recency_note=rec_note,
         )
+        # Attach recency score as a private sort key (not in model)
+        c._recency_adj = rec_adj  # type: ignore[attr-defined]
         contacts.append(c)
 
-    contacts.sort(key=lambda c: (c.rating, 0 if c.email else 1, 0 if c.email_verified else 1))
+    # Sort: primary = title authority + recency penalty (float), secondary = has email, tertiary = verified
+    contacts.sort(key=lambda c: (
+        c.rating + getattr(c, "_recency_adj", 0.0),
+        0 if c.email else 1,
+        0 if c.email_verified else 1,
+    ))
 
     result.contacts = contacts[:max_contacts]
     result.total_found = len(contacts)

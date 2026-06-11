@@ -10,11 +10,24 @@ Approach:
 """
 import re
 import logging
+from datetime import date
 from urllib.parse import quote_plus
 from bs4 import BeautifulSoup
 from utils.http_client import get_session, fetch_url, polite_sleep, multi_engine_search
 from utils.domain_finder import extract_email_from_text
 from config import DECISION_MAKER_TITLES
+
+_CURRENT_YEAR = date.today().year
+
+# "vor 3 Jahren" → 3 years ago; "vor einem Jahr" → 1 year ago; "vor 6 Monaten" → 0
+_RELATIVE_AGO_DE = re.compile(
+    r"vor\s+(?:(einem|\d+)\s+Jahr(?:en)?|(einem|\d+)\s+Monat(?:en)?)"
+    , re.IGNORECASE,
+)
+# English: "3 years ago", "1 year ago"
+_RELATIVE_AGO_EN = re.compile(r"(\d+)\s+year(?:s)?\s+ago", re.IGNORECASE)
+# Absolute year in snippet: "2023", "2022"
+_ABS_YEAR = re.compile(r"\b(20[12]\d)\b")
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +192,7 @@ def _parse_profile_result(result: dict, company_name: str) -> dict | None:
         "email": email,
         "phone": None,
         "source": "linkedin_google",
+        "year_found": _extract_year_from_snippet(snippet),
     }
 
 
@@ -201,5 +215,30 @@ def _extract_title(snippet: str, company_name: str) -> str | None:
         if kw in snippet_lower:
             idx = snippet_lower.index(kw)
             return snippet[idx: idx + len(kw) + 30].strip()
+
+    return None
+
+
+def _extract_year_from_snippet(snippet: str) -> int | None:
+    """Estimate the year a LinkedIn profile was last active from SERP snippet text."""
+    # "vor 3 Jahren" / "vor einem Jahr"
+    m = _RELATIVE_AGO_DE.search(snippet)
+    if m:
+        years_str = m.group(1)
+        if years_str:
+            n = 1 if years_str.lower() == "einem" else int(years_str)
+            return _CURRENT_YEAR - n
+        # months → still current year
+        return _CURRENT_YEAR
+
+    # "3 years ago"
+    m = _RELATIVE_AGO_EN.search(snippet)
+    if m:
+        return _CURRENT_YEAR - int(m.group(1))
+
+    # Absolute year mention (e.g. "updated 2024", "· 2023 ·")
+    years = _ABS_YEAR.findall(snippet)
+    if years:
+        return max(int(y) for y in years)
 
     return None

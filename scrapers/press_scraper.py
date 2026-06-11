@@ -10,10 +10,27 @@ Sources (all free, no login):
 """
 import re
 import logging
+from datetime import date
 from urllib.parse import quote_plus, unquote
 from bs4 import BeautifulSoup
 from utils.http_client import get_session, fetch_url, fetch_with_jina, polite_sleep, multi_engine_search
 from utils.domain_finder import extract_email_from_text, extract_phone_from_text
+
+_CURRENT_YEAR = date.today().year
+
+# German/English date patterns found in press releases
+_DATE_YEAR_PATTERN = re.compile(
+    r"\b(20[12]\d)\b"   # four-digit year 2010–2029
+)
+# More specific: "15. März 2024" or "März 2024" or "2024-03-15"
+_FULL_DATE_PATTERN = re.compile(
+    r"(?:\d{1,2}\.\s*(?:Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)"
+    r"|\d{4}-\d{2}-\d{2}"
+    r")\s*(20[12]\d)"
+    r"|"
+    r"(20[12]\d)-\d{2}-\d{2}",
+    re.IGNORECASE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +198,45 @@ def _scrape_presseportal(company_name: str, session) -> list[dict]:
     return contacts
 
 
+def _extract_year_from_page(html: str, soup) -> int | None:
+    """Extract publication year from a press release page (most reliable → least)."""
+    # 1. HTML meta tags: <meta name="date" content="2024-03-15">
+    for attr in ("date", "pubdate", "article:published_time", "og:article:published_time",
+                 "DC.date", "published_time"):
+        tag = soup.find("meta", attrs={"name": attr}) or soup.find("meta", attrs={"property": attr})
+        if tag:
+            content = tag.get("content", "")
+            m = re.search(r"(20[12]\d)", content)
+            if m:
+                return int(m.group(1))
+
+    # 2. <time> element
+    time_tag = soup.find("time")
+    if time_tag:
+        dt = time_tag.get("datetime", "") or time_tag.get_text()
+        m = re.search(r"(20[12]\d)", dt)
+        if m:
+            return int(m.group(1))
+
+    # 3. Full date pattern in text (e.g. "15. März 2024" or "2024-03-15")
+    text = soup.get_text(separator=" ")
+    m = _FULL_DATE_PATTERN.search(text)
+    if m:
+        year_str = m.group(1) or m.group(2)
+        if year_str:
+            return int(year_str)
+
+    # 4. Most common four-digit year in the first 500 chars (likely the article date)
+    snippet = text[:500]
+    years = _DATE_YEAR_PATTERN.findall(snippet)
+    if years:
+        from collections import Counter
+        most_common = Counter(years).most_common(1)[0][0]
+        return int(most_common)
+
+    return None
+
+
 def _parse_press_release_page(html: str, company_name: str) -> list[dict]:
     """Parse a single Presseportal.de (or similar) press release page."""
     soup = BeautifulSoup(html, "html.parser")
@@ -188,6 +244,7 @@ def _parse_press_release_page(html: str, company_name: str) -> list[dict]:
     contacts = []
     seen: set[str] = set()
 
+    year_found = _extract_year_from_page(html, soup)
     emails = extract_email_from_text(text)
     phones = extract_phone_from_text(text)
 
@@ -208,6 +265,7 @@ def _parse_press_release_page(html: str, company_name: str) -> list[dict]:
             "email": resolved_email,
             "phone": phones[0] if phones else None,
             "source": src,
+            "year_found": year_found,
         })
 
     # 1. Parse structured "Pressekontakt:" block
@@ -216,7 +274,6 @@ def _parse_press_release_page(html: str, company_name: str) -> list[dict]:
         name = pc_match.group(1).strip()
         block_text = text[pc_match.start():pc_match.start() + 300]
         title = _extract_title(block_text)
-        # Look for email in the contact block
         email_m = re.search(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", block_text)
         _add(name, title, email=email_m.group(0) if email_m else None, src="presseportal_contact")
 
