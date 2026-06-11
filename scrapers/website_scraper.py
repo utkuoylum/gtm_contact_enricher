@@ -348,12 +348,33 @@ def _parse_team_page(html: str, domain: str) -> list[dict]:
             if people:
                 return people
 
-    # Last resort: regex scan on plain text
+    # Last resort: regex scan on plain text.
+    # Strip <script> and <style> before get_text() — JSON-LD on hotel/booking sites
+    # contains fields like `"name": "Access Restricted", "description": "..."` which
+    # produce false matches like "Access Restricted – description".
+    for tag in soup.find_all(["script", "style", "noscript"]):
+        tag.decompose()
     _WEBSITE_NON_NAMES = {
+        # Pronouns / possessives
+        "my", "your", "our", "their", "his", "her", "its", "you",
+        # German non-names
         "unsere", "unser", "ihr", "ihre", "wir", "sie", "das", "der", "die",
         "service", "kontakt", "support", "team", "kunden", "produkt",
         "über", "news", "blog", "home", "mehr", "weiter",
-        "our", "the", "your", "contact", "about", "this",
+        # English non-names
+        "the", "contact", "about", "this", "all", "new", "best", "top",
+        "for", "to", "by", "at", "in", "on", "of",
+        # Account / navigation UI
+        "access", "restricted", "account", "profile", "settings", "login",
+        "logout", "register", "password", "search", "menu", "navigation",
+        # Loyalty / booking / travel
+        "rewards", "points", "transfer", "redeem", "earn", "bonus",
+        "corporate", "program", "programme", "offer", "offers", "deal",
+        "agent", "arranger", "arrenger", "booking", "reservation", "reservations",
+        # Hotel chain brand names that shouldn't be person first names
+        "radisson", "marriott", "hilton", "hyatt", "sheraton", "westin", "ibis",
+        # HTML / meta keywords that leak into get_text()
+        "description", "title", "keywords", "key",
     }
     text = soup.get_text(separator="\n")
     for pattern in NAME_TITLE_PATTERNS:
@@ -368,6 +389,9 @@ def _parse_team_page(html: str, domain: str) -> list[dict]:
                 continue
             # Title should not be extremely long (heading text, not a job title)
             if len(title) > 60:
+                continue
+            # Title should not itself be a meta keyword
+            if title.lower() in _WEBSITE_NON_NAMES:
                 continue
             people.append({"full_name": name, "title": title, "email": None, "phone": None, "source": "website_text"})
 

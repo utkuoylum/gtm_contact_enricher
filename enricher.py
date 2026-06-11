@@ -419,6 +419,30 @@ _COMPANY_NAME_NOISE = re.compile(
 # Lowercase particles that appear in legitimate personal names
 _NAME_PARTICLES = {"von", "van", "de", "der", "den", "di", "du", "del", "da", "le", "la", "zu"}
 
+# Words that cannot be any part of a real person's name.
+# Catches navigation menu items, booking UI text, loyalty program names etc.
+# that the website scraper's regex sometimes extracts as false "names".
+_NOT_A_NAME_WORD = frozenset({
+    # Pronouns / possessives
+    "my", "your", "our", "their", "his", "her", "its", "you",
+    # Prepositions / articles that never appear as a name component
+    "for", "to", "by", "at", "in", "on", "of", "the", "an",
+    # Website/UI states
+    "access", "restricted", "new", "all", "best", "top",
+    # Account / navigation
+    "account", "profile", "settings", "login", "logout", "register", "password",
+    "search", "navigation",
+    # Loyalty program / booking
+    "rewards", "points", "transfer", "redeem", "earn", "bonus",
+    "corporate", "program", "programme", "offer", "deal",
+    # Travel / hotel
+    "agent", "arranger", "arrenger", "booking", "reservation", "reservations",
+    # Major hotel chain brand names that cannot be a person's first name
+    "radisson", "marriott", "hilton", "hyatt", "sheraton", "westin", "ibis",
+    # HTML/meta junk that leaks into scraped text
+    "description", "keywords",
+})
+
 
 def _is_valid_person(name: str, company_name: str) -> bool:
     """Return False if the name looks like a company name rather than a real person."""
@@ -438,6 +462,11 @@ def _is_valid_person(name: str, company_name: str) -> bool:
     # Must look like a personal name: 2-5 words
     parts = [p for p in name.strip().split() if p]
     if len(parts) < 2 or len(parts) > 5:
+        return False
+    # Reject if any word is an obvious non-name word (nav items, UI text, brand names)
+    parts_lower = {p.lower() for p in parts}
+    if parts_lower & _NOT_A_NAME_WORD:
+        logger.debug(f"_is_valid_person rejected '{name}': contains non-name word")
         return False
     # Each word must start uppercase, EXCEPT known name particles (von, van, de, etc.)
     for p in parts:
