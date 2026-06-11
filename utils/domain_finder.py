@@ -48,10 +48,19 @@ def _country_tlds(location: str) -> list[str]:
     return []
 
 
+def _normalize_umlauts(text: str) -> str:
+    """Convert German umlauts to ASCII for domain slug generation."""
+    return (text
+            .replace("ä", "ae").replace("Ä", "ae")
+            .replace("ö", "oe").replace("Ö", "oe")
+            .replace("ü", "ue").replace("Ü", "ue")
+            .replace("ß", "ss"))
+
+
 def _clean_slug(company_name: str) -> str:
     """Strip legal suffixes and punctuation, return a clean slug."""
     cleaned = _LEGAL_SUFFIXES.sub("", company_name).strip(" ,.-&")
-    return re.sub(r"[^a-z0-9]", "", cleaned.lower())
+    return re.sub(r"[^a-z0-9]", "", _normalize_umlauts(cleaned).lower())
 
 
 def find_company_domain(company_name: str, location: str = "") -> str | None:
@@ -118,28 +127,41 @@ def _build_slug_candidates(company_name: str) -> list[str]:
     Rationale: the first meaningful word is almost always the brand name.
     The full slug (minus legal suffix) is a secondary candidate.
     """
-    # Strip legal suffix
+    # Strip legal suffix, normalize umlauts (ä→ae, ö→oe, ü→ue, ß→ss)
     cleaned = _LEGAL_SUFFIXES.sub("", company_name).strip(" ,.-&")
+    cleaned = re.sub(r"\s*[&+/]\s*", " ", cleaned).strip()  # "A & B" → "A B"
+    cleaned_ascii = _normalize_umlauts(cleaned)
 
     candidates = []
 
+    def _slug(text: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", text.lower())
+
     # 1. First word only (brand name — highest priority for complex names)
-    words = cleaned.split()
+    words = cleaned_ascii.split()
     if words:
-        first_word_slug = re.sub(r"[^a-z0-9]", "", words[0].lower())
+        first_word_slug = _slug(words[0])
         if len(first_word_slug) >= 3:
             candidates.append(first_word_slug)
 
     # 2. Full cleaned slug (without legal suffix)
-    full_slug = re.sub(r"[^a-z0-9]", "", cleaned.lower())
+    full_slug = _slug(cleaned_ascii)
     if full_slug and full_slug not in candidates and len(full_slug) <= 25:
         candidates.append(full_slug)
 
     # 3. First two words (catches "Weber Maschinenbau" → "webermaschinenbau")
     if len(words) >= 2:
-        two_word_slug = re.sub(r"[^a-z0-9]", "", " ".join(words[:2]).lower())
+        two_word_slug = _slug(" ".join(words[:2]))
         if two_word_slug not in candidates and len(two_word_slug) <= 20:
             candidates.append(two_word_slug)
+
+    # 4. Hyphenated first two words (catches "jaeger-lustig")
+    if len(words) >= 2:
+        w0, w1 = _slug(words[0]), _slug(words[1])
+        if w0 and w1:
+            hyphen_slug = w0 + "-" + w1
+            if hyphen_slug not in candidates and len(hyphen_slug) <= 25:
+                candidates.append(hyphen_slug)
 
     return candidates
 
