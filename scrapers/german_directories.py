@@ -47,15 +47,8 @@ def find_german_directory_contacts(company_name: str, location: str = "") -> lis
     phones_found.extend(eleven.get("phones", []))
     emails_found.extend(eleven.get("emails", []))
 
-    # If no people found but we have contact info, return as generic entry
-    if not contacts and (phones_found or emails_found):
-        contacts.append({
-            "full_name": company_name,
-            "title": "Kontakt",
-            "email": emails_found[0] if emails_found else None,
-            "phone": phones_found[0] if phones_found else None,
-            "source": "german_directory",
-        })
+    # Do NOT create a fake contact with company_name as person — it's not a real person.
+    # Phone/email data flows into result.company_phone separately via phone_hunter.
 
     # Attach phone/email to contactless entries
     fallback_phone = phones_found[0] if phones_found else None

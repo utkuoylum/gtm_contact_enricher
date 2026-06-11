@@ -228,16 +228,22 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
         full_name = raw.get("full_name", "Unknown")
         direct_info = direct_line_map.get(full_name)
 
+        # Individual phone: only if it's a confirmed direct line from hunt_direct_line.
+        # Company main number is already in result.company_phone — attaching it to every
+        # contact implies a direct line when it's just the switchboard.
+        direct_phone_str = direct_info[0] if direct_info else None
+        direct_phone_detail = _phone_info_to_model(direct_info[1]) if direct_info else None
+
         c = Contact(
             full_name=full_name,
             title=raw.get("title"),
             company=company_name,
             email=email,
             email_verified=email_verified,
-            phone=company_phone_str,
-            phone_detail=company_phone_detail,
-            direct_phone=direct_info[0] if direct_info else None,
-            direct_phone_detail=_phone_info_to_model(direct_info[1]) if direct_info else None,
+            phone=direct_phone_str,
+            phone_detail=direct_phone_detail,
+            direct_phone=direct_phone_str,
+            direct_phone_detail=direct_phone_detail,
             linkedin_url=raw.get("linkedin_url"),
             source=raw.get("source", "unknown"),
             rating=rating,

@@ -173,23 +173,8 @@ def _extract_company_page_data(html: str, company_name: str, source_url: str) ->
             if found_people:
                 break
 
-    # If no person cards found, create a generic entry with company contact info
-    if not found_people and (company_emails or company_phone):
-        # At minimum we have the company's contact info
-        for email in company_emails[:2]:
-            local = email.split("@")[0]
-            if "." in local or "_" in local:
-                parts = re.split(r"[._\-]", local)
-                parts = [p for p in parts if len(p) > 1 and p.isalpha()]
-                if len(parts) >= 2:
-                    name = " ".join(p.capitalize() for p in parts[:2])
-                    contacts.append({
-                        "full_name": name,
-                        "title": None,
-                        "email": email,
-                        "phone": company_phone,
-                        "source": "xing_company_page",
-                    })
+    # Do NOT create fake persons from email local parts — "hr.manager@" → "Hr Manager"
+    # is not a real person. Return empty if no named profiles were found.
 
     return contacts
 
