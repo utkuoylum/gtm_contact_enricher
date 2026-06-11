@@ -94,7 +94,7 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
         people_tasks["job_portals"]        = lambda: find_job_portal_contacts(company_name, location)
 
     if domain:
-        people_tasks["website"] = lambda: scrape_company_website(domain)
+        people_tasks["website"] = lambda: scrape_company_website(domain, company_name)
         people_tasks["email_hunter"] = lambda: hunt_domain(domain, company_name)
         people_tasks["company_email"] = lambda: get_company_generic_email(domain, company_name, location)
 

@@ -73,30 +73,39 @@ _GERMAN_LOCATION_WORDS = {
 
 
 def find_company_domain(company_name: str, location: str = "") -> str | None:
-    """Find the primary website domain of a company via search + direct resolution."""
+    """Find the primary website domain of a company."""
     location_lower = location.lower()
     is_dach_search = any(w in location_lower for w in _GERMAN_LOCATION_WORDS)
 
-    # Run ALL queries and collect all found domains — don't return on first hit.
-    # For hotel chains etc., the first result ("parkplaza.com") is often the global
-    # brand site; the second query with "Impressum" returns the local site ("parkplazagermany.com").
+    # Phase 0: Ask Claude from training knowledge — fastest, most reliable for known companies.
+    # Claude already knows "Park Plaza Berlin" → "parkplazagermany.com" without any web search.
+    try:
+        from utils.claude_extractor import claude_domain_from_knowledge, claude_available
+        if claude_available():
+            known = claude_domain_from_knowledge(company_name, location)
+            if known and _domain_resolves(known):
+                logger.info(f"Domain (Claude knowledge): {known}")
+                return known
+    except Exception:
+        pass
+
+    # Phase 1: SERP — run all queries and collect all found domains (don't return on first hit).
+    # Impressum query comes first: it targets the *local* site, not the global brand site.
     queries = [
-        f'"{company_name}" official website',
-        # Impressum search is crucial for German companies — always targets the *local* site
         f'"{company_name}" {location} Impressum Kontakt' if location else f'"{company_name}" Impressum Kontakt',
+        f'"{company_name}" official website',
         f'"{company_name}" {location} website' if location else f'"{company_name}" website',
     ]
-
     candidates: list[str] = []
     for query in queries:
         domain = _search_google_for_domain(query, company_name, location)
         if domain and domain not in candidates:
             candidates.append(domain)
 
-    # Fallback: try direct TLD guesses
+    # Phase 2: TLD guessing — ONLY for slugs ≥ 5 chars.
+    # Short slugs ("park", "info") match thousands of unrelated domains like park.de.
     if not candidates:
-        # Fallback: direct TLD guesses from slug
-        slug_candidates = _build_slug_candidates(company_name)
+        slug_candidates = [s for s in _build_slug_candidates(company_name) if len(s) >= 5]
         country_tlds = _country_tlds(location)
         base_tlds = [".com", ".de", ".at", ".ch", ".net", ".org", ".co.uk", ".io", ".eu"]
         all_tlds = list(dict.fromkeys(country_tlds + base_tlds))
@@ -242,7 +251,10 @@ def _search_google_for_domain(query: str, company_name: str, location: str = "")
         match_slugs = specific_slugs if specific_slugs else slug_candidates_list
         matched = False
         for s in match_slugs:
-            if s and (s in domain_base or domain_base in s):
+            # s in domain_base: slug is a substring of domain (parkplaza → parkplazaberlin.com) ✓
+            # domain_base in s: domain is a substring of slug — only valid if domain_base
+            # is ≥5 chars, otherwise short domains like "park" falsely match "parkplaza".
+            if s and (s in domain_base or (len(domain_base) >= 5 and domain_base in s)):
                 matched = True
                 break
         if matched:

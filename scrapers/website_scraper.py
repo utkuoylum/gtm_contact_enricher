@@ -51,12 +51,40 @@ NAME_TITLE_PATTERNS = [
 ]
 
 
-def scrape_company_website(domain: str) -> list[dict]:
+_THROWAWAY_EMAIL_PROVIDERS = {
+    "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com",
+    "protonmail.com", "aol.com", "gmx.de", "web.de", "t-online.de",
+}
+
+
+def _is_company_email(email: str, domain: str, company_keywords: set[str]) -> bool:
+    """
+    Accept an email found on a company page if:
+    1. Its domain matches the scraped domain (exact or subdomain), OR
+    2. Its domain shares company keywords — handles cases like parkplazaberlin.com
+       showing ppblinfo@parkplazagermany.com (same hotel, different domain).
+    Reject free/throwaway providers.
+    """
+    host = email.split("@")[-1].lower()
+    if host in _THROWAWAY_EMAIL_PROVIDERS:
+        return False
+    if host == domain or host.endswith("." + domain):
+        return True
+    # Accept cross-domain emails that share company keywords (≥1 keyword of ≥4 chars)
+    if any(kw in host for kw in company_keywords):
+        return True
+    return False
+
+
+def scrape_company_website(domain: str, company_name: str = "") -> list[dict]:
     base_url = f"https://{domain}"
     session = get_session()
     contacts = []
     emails_found = set()
     phones_found = set()
+
+    # Build keyword set for cross-domain email matching
+    _co_keywords = {w.lower() for w in re.sub(r"[^a-z0-9 ]", "", company_name.lower()).split() if len(w) >= 4}
 
     # Discover additional subdomains via crt.sh (finds team.company.com, karriere.company.com etc.)
     extra_bases = _discover_team_subdomains(domain)
@@ -68,7 +96,7 @@ def scrape_company_website(domain: str) -> list[dict]:
     _domain_hard_blocked = (html is None)
     if html:
         for e in extract_email_from_text(html):
-            if e.split("@")[-1].lower() == domain or e.split("@")[-1].lower().endswith("." + domain):
+            if _is_company_email(e, domain, _co_keywords):
                 emails_found.add(e)
         for p in extract_phone_from_text(html):
             phones_found.add(p)
@@ -113,10 +141,7 @@ def scrape_company_website(domain: str) -> list[dict]:
         polite_sleep(0.8)
 
         for e in extract_email_from_text(html):
-            # Only keep emails belonging to the domain being scraped — rejects
-            # third-party addresses, honeypots, and tracking pixels in the page.
-            email_host = e.split("@")[-1].lower()
-            if email_host == domain or email_host.endswith("." + domain):
+            if _is_company_email(e, domain, _co_keywords):
                 emails_found.add(e)
         for p in extract_phone_from_text(html):
             phones_found.add(p)
@@ -476,14 +501,14 @@ def get_company_generic_email(domain: str, company_name: str = "", location: str
     base_url = f"https://{domain}"
     session = get_session()
 
+    _co_kw = {w.lower() for w in re.sub(r"[^a-z0-9 ]", "", company_name.lower()).split() if len(w) >= 4}
     found_emails: list[str] = []
     for path in ["/impressum", "/kontakt", "/contact", "/contact-us", "/"]:
         html = fetch_url(base_url + path, session)
         if not html:
             continue
         for e in extract_email_from_text(html):
-            host = e.split("@")[-1].lower()
-            if host == domain or host.endswith("." + domain):
+            if _is_company_email(e, domain, _co_kw):
                 found_emails.append(e)
         if found_emails:
             break

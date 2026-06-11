@@ -212,6 +212,53 @@ def parse_impressum_with_claude(html_text: str, company_name: str = "") -> list[
     return extract_contacts_from_text(html_text, company_name, source_hint="impressum")
 
 
+# ── Domain lookup from Claude training knowledge ──────────────────────────────
+
+_DOMAIN_KNOWLEDGE_SYSTEM = (
+    "You are a company website expert. Given a company name and location, return the company's "
+    "official website domain. "
+    "For companies in Germany/Austria/Switzerland, return the LOCAL German domain if one exists — "
+    "not the global brand site. Examples: "
+    "'Park Plaza Berlin' → 'parkplazagermany.com' (not parkplaza.com). "
+    "'Hilton Munich' → 'hilton.com' (no separate German site). "
+    "'Marriott Frankfurt' → 'marriott.com' (no separate German site). "
+    "If you are NOT confident, return null — do not guess. "
+    "Return ONLY the bare domain (e.g. 'parkplazagermany.com'). No explanation."
+)
+
+_DOMAIN_RE = re.compile(r"^[a-z0-9][a-z0-9\-\.]+\.[a-z]{2,}$")
+
+
+def claude_domain_from_knowledge(company_name: str, location: str = "") -> Optional[str]:
+    """
+    Ask Claude to identify the company domain from training knowledge — no web search needed.
+    Fast and reliable for well-known companies (hotel chains, brands, large corps).
+    Returns None if Claude is not confident (prevents hallucinated domains).
+    """
+    if not claude_available():
+        return None
+
+    try:
+        resp = _client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=60,
+            system=_DOMAIN_KNOWLEDGE_SYSTEM,
+            messages=[{"role": "user", "content": f"Company: {company_name}\nLocation: {location}"}],
+        )
+        raw = resp.content[0].text.strip().lower()
+        logger.debug(f"Claude knowledge domain: raw={raw!r}")
+        if not raw or raw in ("null", "none", "n/a", "unknown", "i don't know"):
+            return None
+        # Strip URL cruft
+        raw = re.sub(r"^https?://", "", raw).lstrip("www.").split("/")[0].strip().rstrip(".")
+        if _DOMAIN_RE.match(raw):
+            return raw
+    except Exception as e:
+        logger.debug(f"Claude knowledge domain error: {e}")
+
+    return None
+
+
 # ── SERP domain finder ─────────────────────────────────────────────────────────
 
 _SERP_DOMAIN_SYSTEM = (
