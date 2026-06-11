@@ -9,6 +9,9 @@ load_dotenv()
 # Get key: https://console.anthropic.com/
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+# Fast/cheap model for high-volume structural tasks (domain lookup, scoring, SERP parsing).
+# Haiku is ~8x cheaper and ~3x faster than Sonnet for these simple tasks.
+CLAUDE_FAST_MODEL = os.getenv("CLAUDE_FAST_MODEL", "claude-haiku-4-5-20251001")
 
 # Hunter.io API key (free: 25 searches/month, paid: $49/mo for 500)
 HUNTER_API_KEY = os.getenv("HUNTER_API_KEY", "")

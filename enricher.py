@@ -106,7 +106,7 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
     futures = {executor.submit(fn): name for name, fn in people_tasks.items()}
     company_generic_email: str | None = None
     try:
-        for future in as_completed(futures, timeout=120):
+        for future in as_completed(futures, timeout=40):
             name = futures[future]
             try:
                 res = future.result()
@@ -178,38 +178,16 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
     deduped = _deduplicate(raw_contacts)
     logger.info(f"After dedup: {len(deduped)} people")
 
-    # 4b. Claude synthesis: validate contacts and remove false positives
+    # 4b+4c. Single Claude call: remove false positives + score confidence
     if deduped:
         try:
-            from utils.claude_extractor import synthesize_contacts, claude_available
-            if claude_available():
-                contacts_for_claude = [
-                    {"full_name": c.get("full_name", ""), "title": c.get("title"),
-                     "email": c.get("email"), "source": c.get("source", "")}
-                    for c in deduped
-                ]
-                cleaned = synthesize_contacts(contacts_for_claude, company_name, location)
-                if cleaned:
-                    # Merge cleaned data back: update title/full_name but keep all original fields
-                    cleaned_map = {c.get("full_name", "").lower(): c for c in cleaned}
-                    surviving_names = {c.get("full_name", "").lower() for c in cleaned}
-                    deduped = [
-                        {**c, "title": cleaned_map.get(c.get("full_name", "").lower(), {}).get("title", c.get("title"))}
-                        for c in deduped
-                        if c.get("full_name", "").lower() in surviving_names
-                    ]
-        except Exception as e:
-            errors.append(f"claude_synthesis: {e}")
-
-    # 4c. Claude evaluation: score confidence 0-100, confirm employment, keep top 5
-    if deduped:
-        try:
-            from utils.claude_extractor import evaluate_contacts, claude_available
+            from utils.claude_extractor import clean_and_score_contacts, claude_available
             if claude_available():
                 slim = [
                     {
                         "full_name": c.get("full_name", ""),
                         "title": c.get("title"),
+                        "email": c.get("email"),
                         "source": c.get("source", ""),
                         "year_found": c.get("year_found"),
                         "has_email": bool(c.get("email")),
@@ -217,26 +195,36 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
                     }
                     for c in deduped
                 ]
-                evaluated = evaluate_contacts(slim, company_name, location, job_category)
-                if evaluated:
-                    # Map Claude's confidence scores back to the full contact dicts by name.
-                    # Evaluation scores but does NOT remove — all contacts survive, sorted best-first.
-                    score_map = {e.get("full_name", "").lower(): e for e in evaluated}
-                    for c in deduped:
-                        key = c.get("full_name", "").lower()
-                        if key in score_map:
-                            c["confidence"] = score_map[key].get("confidence", 0)
-                            c["employment_confirmed"] = score_map[key].get("employment_confirmed", False)
-                    # Sort by confidence desc so email enrichment and final cutoff favour best candidates
+                cleaned, scored = clean_and_score_contacts(slim, company_name, location, job_category)
+                if cleaned:
+                    surviving_names = {c.get("full_name", "").lower() for c in cleaned}
+                    score_map = {c.get("full_name", "").lower(): c for c in cleaned}
+                    deduped = [
+                        {
+                            **c,
+                            "title": score_map.get(c.get("full_name", "").lower(), {}).get("title", c.get("title")),
+                            "confidence": score_map.get(c.get("full_name", "").lower(), {}).get("confidence", 0),
+                            "employment_confirmed": score_map.get(c.get("full_name", "").lower(), {}).get("employment_confirmed", False),
+                        }
+                        for c in deduped
+                        if c.get("full_name", "").lower() in surviving_names
+                    ]
                     deduped.sort(key=lambda c: -c.get("confidence", 0))
         except Exception as e:
-            errors.append(f"claude_evaluate: {e}")
+            errors.append(f"claude_clean_score: {e}")
 
     # 5. Enrich each person with email (using our own hunter)
     if domain:
         _enrich_emails_with_hunter(deduped, domain, pattern, hunt_result, errors)
 
-    # 6. Bulk-verify all newly assigned emails not yet in verified_email_map
+    # 6. Bulk-verify newly assigned emails — skip emails from trusted sources
+    # Apollo/LinkedIn/Xing provide pre-validated emails; SMTP-verify is wasteful and slow.
+    _TRUSTED_SOURCES = {"apollo", "linkedin", "xing", "german_register", "northdata"}
+    for c in deduped:
+        src = c.get("source", "")
+        if c.get("email") and src in _TRUSTED_SOURCES:
+            verified_email_map[c["email"]] = "valid"
+
     unverified = [c for c in deduped if c.get("email") and c.get("email") not in verified_email_map]
     if unverified:
         emails_to_verify = [c["email"] for c in unverified]

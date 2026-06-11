@@ -67,6 +67,7 @@ def get_session() -> requests.Session:
     retry = Retry(
         total=MAX_RETRIES,
         connect=0,       # don't retry connection timeouts — they signal a blocked host
+        read=0,          # don't retry read timeouts — slow sites waste pipeline time
         backoff_factor=1.5,
         status_forcelist=[429, 500, 502, 503, 504],
         allowed_methods=["GET", "POST"],

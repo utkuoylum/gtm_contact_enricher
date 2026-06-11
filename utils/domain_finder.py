@@ -79,13 +79,19 @@ def find_company_domain(company_name: str, location: str = "") -> str | None:
 
     # Phase 0: Ask Claude from training knowledge — fastest, most reliable for known companies.
     # Claude already knows "Park Plaza Berlin" → "parkplazagermany.com" without any web search.
+    # For DACH companies: only accept .de/.at/.ch domains from Claude. If Claude returns a .com
+    # for a German company, proceed to SERP (avoids confusing "Koro" with US koro.com).
+    _dach_tlds = (".de", ".at", ".ch")
     try:
         from utils.claude_extractor import claude_domain_from_knowledge, claude_available
         if claude_available():
             known = claude_domain_from_knowledge(company_name, location)
             if known and _domain_resolves(known):
-                logger.info(f"Domain (Claude knowledge): {known}")
-                return known
+                if is_dach_search and not any(known.endswith(t) for t in _dach_tlds):
+                    logger.debug(f"Claude returned non-DACH domain {known} for DACH company — trying SERP first")
+                else:
+                    logger.info(f"Domain (Claude knowledge): {known}")
+                    return known
     except Exception:
         pass
 

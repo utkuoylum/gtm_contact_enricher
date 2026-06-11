@@ -66,7 +66,7 @@ def hunt_domain(domain: str, company_name: str = "") -> DomainHuntResult:
 
     # --- Run all crawlers in parallel ---
     tasks = {
-        "site":      lambda: crawl_domain(domain, max_pages=60),
+        "site":      lambda: crawl_domain(domain, max_pages=15),
         "github":    lambda: {"emails": find_emails_via_github(domain)},
         "google":    lambda: {"emails": find_emails_via_search(domain)},
         "whois":     lambda: get_whois_emails(domain),
@@ -76,7 +76,7 @@ def hunt_domain(domain: str, company_name: str = "") -> DomainHuntResult:
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(fn): name for name, fn in tasks.items()}
         try:
-            for future in as_completed(futures, timeout=120):
+            for future in as_completed(futures, timeout=30):
                 name = futures[future]
                 try:
                     res = future.result()

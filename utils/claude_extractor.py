@@ -21,7 +21,7 @@ import logging
 import re
 from typing import Optional
 
-from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, CLAUDE_FAST_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +177,7 @@ def pick_best_domain(
 
     try:
         resp = _client.messages.create(
-            model=CLAUDE_MODEL,
+            model=CLAUDE_FAST_MODEL,
             max_tokens=128,
             system=_DOMAIN_SYSTEM,
             messages=[{"role": "user", "content": user_msg}],
@@ -240,7 +240,7 @@ def claude_domain_from_knowledge(company_name: str, location: str = "") -> Optio
 
     try:
         resp = _client.messages.create(
-            model=CLAUDE_MODEL,
+            model=CLAUDE_FAST_MODEL,
             max_tokens=60,
             system=_DOMAIN_KNOWLEDGE_SYSTEM,
             messages=[{"role": "user", "content": f"Company: {company_name}\nLocation: {location}"}],
@@ -296,7 +296,7 @@ def find_domain_from_serp(
 
     try:
         resp = _client.messages.create(
-            model=CLAUDE_MODEL,
+            model=CLAUDE_FAST_MODEL,
             max_tokens=80,
             system=_SERP_DOMAIN_SYSTEM,
             messages=[{"role": "user", "content": user_msg}],
@@ -398,28 +398,97 @@ def extract_contacts_from_serp(
     return []
 
 
-# ── Contact evaluator — confidence scoring + employment confirmation ───────────
+# ── Combined: filter false positives + score in one call ──────────────────────
 
-_EVALUATE_SYSTEM = """\
-You are a B2B contact quality evaluator for a recruitment agency.
-Given contacts found for a company, assign each a confidence score and confirm employment.
+_CLEAN_AND_SCORE_SYSTEM = """\
+You are a B2B contact quality controller for a recruitment agency.
+Given raw contacts scraped for a company, do two things in ONE pass:
 
-Confidence score (0–100) — how likely this person currently works at the company:
-  85-100: LinkedIn/Xing profile at this company, Impressum, or Handelsregister
-  65-84:  Company website team/about page, press article < 1 year ago, named + titled
+STEP 1 — Remove false positives. DROP any entry where full_name is NOT a real human name:
+- Navigation items: 'My Account', 'My Reservations', 'Zum Inhalt', 'Access Restricted'
+- Brand/loyalty/program names: 'Radisson Rewards', 'Transfer Points', 'Rewards Corporate Program'
+- Booking interface text: 'Travel Agent', 'Travel Arranger', 'My Profile'
+- Company names, department names, product names used as person names
+- Names containing pronouns (My, Your, Our), prepositions (For, By), or generic words
+  (Account, Rewards, Points, Program, Booking, Agent, Restricted, Management, Hotel)
+KEEP only entries where full_name is unambiguously a real human first+last name.
+
+STEP 2 — For each surviving contact, add confidence score and employment confirmation:
+Confidence (0–100) — how likely this person currently works at the company:
+  85-100: LinkedIn/Xing profile, Impressum, or Handelsregister
+  65-84:  Company website about/team page, press article < 1 year, named + titled
   40-64:  Google SERP mention with name+title, press article 1-2 years old
-  10-39:  Older data, unclear link to company, or title missing
-  0:      Not a real human name (navigation items, company names, brand words)
+  10-39:  Older data, title missing, or unclear company link
 
 employment_confirmed = true ONLY if source is one of:
   linkedin, xing, website_card, website_schema, impressum, german_register, job_portal, northdata
 
-Rules:
-- Score ALL entries — do not remove any
-- Contacts with the same person (different spellings) → keep one with higher confidence, set the other to 0
-- Keep ALL original fields and ADD two new fields: confidence (int 0-100), employment_confirmed (bool)
-- If full_name is not a real human name (navigation item, company name, brand word), set confidence=0
-Return ONLY valid JSON array ordered by confidence DESC, no explanation."""
+NORMALIZE: standardize job titles (keep German if German company).
+Contacts with the same person (different spellings) → keep one with higher confidence, remove duplicate.
+Return ALL surviving contacts with ALL original fields PLUS confidence (int) and employment_confirmed (bool).
+Order by confidence DESC. Return ONLY valid JSON array, no explanation."""
+
+
+# Keep the old systems for backward compat if called directly
+_EVALUATE_SYSTEM = _CLEAN_AND_SCORE_SYSTEM
+
+
+def clean_and_score_contacts(
+    contacts: list[dict],
+    company_name: str,
+    location: str = "",
+    job_category: str = "",
+) -> tuple[list[dict], list[dict]]:
+    """
+    Single Claude call: remove false positives AND score remaining contacts.
+
+    Returns (cleaned_contacts, scored_contacts) — cleaned_contacts have confidence
+    and employment_confirmed added. On any error returns (contacts, []).
+    """
+    if not claude_available() or not contacts:
+        return contacts, []
+
+    user_msg = (
+        f"Company: {company_name}\nLocation: {location}\nJob category: {job_category}\n\n"
+        f"Raw contacts:\n{json.dumps(contacts[:25], ensure_ascii=False)}"
+    )
+
+    try:
+        resp = _client.messages.create(
+            model=CLAUDE_FAST_MODEL,
+            max_tokens=3000,
+            system=_CLEAN_AND_SCORE_SYSTEM,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        raw = resp.content[0].text.strip()
+        logger.debug(
+            f"Claude clean_and_score: "
+            f"{resp.usage.input_tokens} in / {resp.usage.output_tokens} out"
+        )
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list):
+            return contacts, []
+
+        result = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            item.setdefault("confidence", 0)
+            item.setdefault("employment_confirmed", False)
+            result.append(item)
+
+        result.sort(key=lambda x: -x.get("confidence", 0))
+        return result, result
+
+    except json.JSONDecodeError as e:
+        logger.debug(f"Claude clean_and_score non-JSON: {e}")
+    except Exception as e:
+        logger.warning(f"Claude API error in clean_and_score_contacts: {e}")
+
+    return contacts, []
 
 
 def evaluate_contacts(
