@@ -67,8 +67,6 @@ class EnrichmentRequest(BaseModel):
 class EnrichmentResult(BaseModel):
     company_name: str
     domain: Optional[str] = None
-    company_phone: Optional[str] = None         # kept for backward compat
-    company_phone_detail: Optional[PhoneDetail] = None
     company_contact_info: Optional[CompanyContactInfo] = None
     contacts: List[Contact] = []
     total_found: int = 0

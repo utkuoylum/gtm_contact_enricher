@@ -143,17 +143,18 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
 
     logger.info(f"People found: {len(raw_contacts)}, email_hunter: {hunt_result is not None}, phone: {phone_result is not None}")
 
-    # 2b. Attach phone hunt results to the main result
+    # 2b. Build company_contact_info from phone hunter + generic email scrape
+    _company_phone_str: str | None = None
+    _company_phone_detail = None
     if phone_result and phone_result.company_main:
         pi = phone_result.company_main
-        result.company_phone = pi.e164 or pi.international or pi.raw
-        result.company_phone_detail = _phone_info_to_model(pi)
+        _company_phone_str = pi.e164 or pi.international or pi.raw
+        _company_phone_detail = _phone_info_to_model(pi)
         errors.extend(phone_result.errors)
 
-    # 2c. Build company_contact_info (company-level data, not tied to a person)
     result.company_contact_info = CompanyContactInfo(
-        phone=result.company_phone,
-        phone_detail=result.company_phone_detail,
+        phone=_company_phone_str,
+        phone_detail=_company_phone_detail,
         email=company_generic_email or None,
         website=f"https://{domain}" if domain else None,
     )
@@ -210,19 +211,16 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
                     for c in deduped
                 ]
                 evaluated = evaluate_contacts(slim, company_name, location, job_category)
-                if evaluated is not None:
-                    # Map Claude's scores back to the full contact dicts by name
+                if evaluated:
+                    # Map Claude's confidence scores back to the full contact dicts by name.
+                    # Evaluation scores but does NOT remove — all contacts survive, sorted best-first.
                     score_map = {e.get("full_name", "").lower(): e for e in evaluated}
-                    surviving = {e.get("full_name", "").lower() for e in evaluated}
-                    new_deduped = []
                     for c in deduped:
                         key = c.get("full_name", "").lower()
-                        if key in surviving:
+                        if key in score_map:
                             c["confidence"] = score_map[key].get("confidence", 0)
                             c["employment_confirmed"] = score_map[key].get("employment_confirmed", False)
-                            new_deduped.append(c)
-                    deduped = new_deduped
-                    # Sort by confidence desc so email enrichment focuses on best candidates
+                    # Sort by confidence desc so email enrichment and final cutoff favour best candidates
                     deduped.sort(key=lambda c: -c.get("confidence", 0))
         except Exception as e:
             errors.append(f"claude_evaluate: {e}")

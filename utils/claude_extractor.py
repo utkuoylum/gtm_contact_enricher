@@ -351,22 +351,22 @@ _EVALUATE_SYSTEM = """\
 You are a B2B contact quality evaluator for a recruitment agency.
 Given contacts found for a company, assign each a confidence score and confirm employment.
 
-Confidence score (0–100):
-  90-100: Active LinkedIn/Xing profile explicitly at this company, or Impressum / Handelsregister
-  70-89:  Company website team/about page, press article < 1 year ago with named person+title
-  50-69:  Google SERP mention, press article 1-2 years old, title present
-  < 50:   No clear link to company, old data, or name is not a real person (auto-remove)
+Confidence score (0–100) — how likely this person currently works at the company:
+  85-100: LinkedIn/Xing profile at this company, Impressum, or Handelsregister
+  65-84:  Company website team/about page, press article < 1 year ago, named + titled
+  40-64:  Google SERP mention with name+title, press article 1-2 years old
+  10-39:  Older data, unclear link to company, or title missing
+  0:      Not a real human name (navigation items, company names, brand words)
 
 employment_confirmed = true ONLY if source is one of:
   linkedin, xing, website_card, website_schema, impressum, german_register, job_portal, northdata
 
 Rules:
-- Remove entries with confidence < 50 (not reliable enough)
-- Return max 5 contacts ordered by confidence DESC
-- Contacts with the same person (different name spellings) → keep the one with higher confidence
+- Score ALL entries — do not remove any
+- Contacts with the same person (different spellings) → keep one with higher confidence, set the other to 0
 - Keep ALL original fields and ADD two new fields: confidence (int 0-100), employment_confirmed (bool)
-- If full_name is not a real human name (navigation items, company names, etc.), set confidence=0
-Return ONLY valid JSON array, no explanation."""
+- If full_name is not a real human name (navigation item, company name, brand word), set confidence=0
+Return ONLY valid JSON array ordered by confidence DESC, no explanation."""
 
 
 def evaluate_contacts(
@@ -414,10 +414,11 @@ def evaluate_contacts(
                 continue
             item.setdefault("confidence", 0)
             item.setdefault("employment_confirmed", False)
-            if item["confidence"] >= 50:
-                result.append(item)
+            result.append(item)
 
-        return result[:5]
+        # Sort by confidence DESC — caller decides the cutoff (max_contacts)
+        result.sort(key=lambda x: -x.get("confidence", 0))
+        return result
 
     except json.JSONDecodeError as e:
         logger.debug(f"Claude evaluate_contacts non-JSON: {e}")
