@@ -13,6 +13,7 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from utils.http_client import get_session, fetch_url, fetch_with_jina, polite_sleep, REQUEST_TIMEOUT
 from utils.domain_finder import extract_email_from_text, extract_phone_from_text
+from utils.claude_extractor import parse_impressum_with_claude, extract_contacts_from_text, claude_available
 
 logger = logging.getLogger(__name__)
 
@@ -88,14 +89,23 @@ def scrape_company_website(domain: str) -> list[dict]:
         for p in extract_phone_from_text(html):
             phones_found.add(p)
 
-        # Impressum pages: use dedicated parser first
+        # Impressum pages: use dedicated parser first, Claude fallback if empty
         if path in ("/impressum", "/imprint"):
             impressum_people = _parse_impressum(html)
             if impressum_people:
                 discovered_people.extend(impressum_people)
-                continue  # Skip generic parser for this page
+            elif claude_available():
+                soup_text = BeautifulSoup(html, "html.parser").get_text(separator="\n")
+                claude_people = parse_impressum_with_claude(soup_text, domain)
+                discovered_people.extend(claude_people)
+            continue  # Skip generic parser for impressum pages
 
         people = _parse_team_page(html, domain)
+        # If team/about page yielded nothing — try Claude as last resort
+        if not people and claude_available() and path in ("/team", "/about", "/about-us", "/leadership", "/management", "/unternehmen"):
+            soup_text = BeautifulSoup(html, "html.parser").get_text(separator="\n")
+            if len(soup_text) > 300:
+                people = extract_contacts_from_text(soup_text, domain, source_hint="team_page")
         discovered_people.extend(people)
 
     # Deduplicate people by name

@@ -15,6 +15,7 @@ from urllib.parse import quote_plus, unquote
 from bs4 import BeautifulSoup
 from utils.http_client import get_session, fetch_url, fetch_with_jina, polite_sleep, multi_engine_search
 from utils.domain_finder import extract_email_from_text, extract_phone_from_text
+from utils.claude_extractor import extract_contacts_from_text, claude_available
 
 _CURRENT_YEAR = date.today().year
 
@@ -126,6 +127,11 @@ def find_press_contacts(company_name: str, location: str = "") -> list[dict]:
         sp = _serp_press_search(company_name, session)
         contacts.extend(sp)
 
+    # 4. Claude fallback — when all regex-based parsing found nothing
+    if not contacts and claude_available():
+        cc = _scrape_presseportal_with_claude(company_name, session)
+        contacts.extend(cc)
+
     return _dedupe(contacts)[:8]
 
 
@@ -194,6 +200,39 @@ def _scrape_presseportal(company_name: str, session) -> list[dict]:
         text = soup.get_text(separator="\n")
         if company_kw in text.lower():
             contacts.extend(_extract_from_text(text, company_name))
+
+    return contacts
+
+
+def _scrape_presseportal_with_claude(company_name: str, session) -> list[dict]:
+    """
+    Fetch a press release page and use Claude to extract contacts when
+    regex patterns return nothing (unusual formatting, markdown from Jina, etc.).
+    """
+    if not claude_available():
+        return []
+
+    query = f'site:presseportal.de "{company_name}" Pressekontakt OR Geschäftsführer'
+    from utils.http_client import serp_links
+    links = serp_links(query, session, num=5)
+    contacts = []
+    company_kw = company_name.lower().split()[0]
+
+    for url in links[:3]:
+        if "presseportal.de" not in url:
+            continue
+        pr_html = fetch_url(url, session)
+        if not pr_html:
+            pr_html = fetch_with_jina(url)
+        if not pr_html or company_kw not in pr_html.lower():
+            continue
+        from bs4 import BeautifulSoup as _BS
+        text = _BS(pr_html, "html.parser").get_text(separator="\n")
+        found = extract_contacts_from_text(text, company_name, source_hint="presseportal")
+        contacts.extend(found)
+        polite_sleep(0.4)
+        if contacts:
+            break
 
     return contacts
 

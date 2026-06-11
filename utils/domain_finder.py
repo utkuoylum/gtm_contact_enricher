@@ -57,6 +57,7 @@ def _clean_slug(company_name: str) -> str:
 def find_company_domain(company_name: str, location: str = "") -> str | None:
     """Find the primary website domain of a company via search + direct resolution."""
     # Try search engines first
+    candidates_from_search: list[str] = []
     for query in [
         f'"{company_name}" official website',
         f'"{company_name}" {location} Kontakt' if location else f'"{company_name}" Kontakt Impressum',
@@ -64,16 +65,18 @@ def find_company_domain(company_name: str, location: str = "") -> str | None:
     ]:
         domain = _search_google_for_domain(query, company_name)
         if domain:
+            if domain not in candidates_from_search:
+                candidates_from_search.append(domain)
+            # Only return immediately if very confident (single unambiguous result)
             return domain
 
     # Fallback: try direct TLD guesses
-    # Build slug candidates — longest first, then first-word fallback
     slug_candidates = _build_slug_candidates(company_name)
     country_tlds = _country_tlds(location)
-    # Always include .com early — many DACH companies use .com even if they're German
     base_tlds = [".com", ".de", ".at", ".ch", ".net", ".org", ".co.uk", ".io", ".eu"]
-    all_tlds = list(dict.fromkeys(country_tlds + base_tlds))  # country TLD first, no duplicates
+    all_tlds = list(dict.fromkeys(country_tlds + base_tlds))
 
+    resolved: list[str] = []
     seen = set()
     for slug in slug_candidates:
         for tld in all_tlds:
@@ -82,9 +85,27 @@ def find_company_domain(company_name: str, location: str = "") -> str | None:
                 continue
             seen.add(key)
             if _domain_resolves(key):
-                return key
+                resolved.append(key)
+                if len(resolved) == 1:
+                    break  # first hit is usually correct for exact slug matches
+        if resolved:
+            break
 
-    return None
+    if not resolved:
+        return None
+
+    # If multiple slugs resolve, ask Claude to pick the best one
+    if len(resolved) > 1:
+        try:
+            from utils.claude_extractor import pick_best_domain, claude_available
+            if claude_available():
+                choice = pick_best_domain(company_name, location, resolved)
+                if choice:
+                    return choice
+        except Exception:
+            pass
+
+    return resolved[0]
 
 
 def _build_slug_candidates(company_name: str) -> list[str]:

@@ -3,6 +3,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Anthropic Claude API key — used as smart fallback parser when regex extraction fails
+# Model: claude-sonnet-4-6 (default), switch to claude-haiku-4-5-20251001 to cut costs ~8x
+# Pricing: Sonnet ~$3/1M input + $15/1M output tokens; Haiku ~$0.25/$1.25
+# Get key: https://console.anthropic.com/
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+
 # Hunter.io API key (free: 25 searches/month, paid: $49/mo for 500)
 HUNTER_API_KEY = os.getenv("HUNTER_API_KEY", "")
 
