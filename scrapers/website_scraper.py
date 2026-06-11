@@ -11,7 +11,7 @@ import re
 import requests
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
-from utils.http_client import get_session, fetch_url, polite_sleep, REQUEST_TIMEOUT
+from utils.http_client import get_session, fetch_url, fetch_with_jina, polite_sleep, REQUEST_TIMEOUT
 from utils.domain_finder import extract_email_from_text, extract_phone_from_text
 
 logger = logging.getLogger(__name__)
@@ -74,7 +74,9 @@ def scrape_company_website(domain: str) -> list[dict]:
     for path in TEAM_PAGE_PATHS:
         url = base_url + path
         html = fetch_url(url, session, use_scraper_api=True)
-        # If blocked, try Wayback Machine cached version
+        # If blocked: try Jina Reader (handles JS + WAF), then Wayback Machine
+        if not html:
+            html = fetch_with_jina(url)
         if not html:
             html = _fetch_wayback(domain, path)
         if not html:

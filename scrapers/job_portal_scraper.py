@@ -17,7 +17,7 @@ import re
 import logging
 from urllib.parse import quote_plus, unquote
 from bs4 import BeautifulSoup
-from utils.http_client import get_session, fetch_url, polite_sleep, multi_engine_search
+from utils.http_client import get_session, fetch_url, fetch_with_jina, polite_sleep, multi_engine_search
 from utils.domain_finder import extract_email_from_text, extract_phone_from_text
 
 logger = logging.getLogger(__name__)
@@ -162,9 +162,12 @@ def _scrape_stepstone(company_name: str, location: str, session) -> list[dict]:
         if re.search(r"(stepstone|monster|xing)\.de", href) and re.search(r"/(stellenangebote|job|jobs|stellen)/", href):
             job_urls.append(re.sub(r"\?.*$", "", href))
 
-    # Fetch individual job listings
+    # Fetch individual job listings — use Jina for JS-rendered pages (StepStone is a React SPA)
     for url in list(dict.fromkeys(job_urls))[:5]:
         jhtml = fetch_url(url, session)
+        if not jhtml or company_kw not in jhtml.lower():
+            # StepStone pages are JS-rendered → Jina handles them
+            jhtml = fetch_with_jina(url)
         if not jhtml or company_kw not in jhtml.lower():
             continue
         polite_sleep(0.4)

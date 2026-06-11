@@ -12,7 +12,7 @@ import re
 import logging
 from urllib.parse import quote_plus, unquote
 from bs4 import BeautifulSoup
-from utils.http_client import get_session, fetch_url, polite_sleep, multi_engine_search
+from utils.http_client import get_session, fetch_url, fetch_with_jina, polite_sleep, multi_engine_search
 from utils.domain_finder import extract_email_from_text, extract_phone_from_text
 
 logger = logging.getLogger(__name__)
@@ -124,6 +124,10 @@ def _scrape_presseportal(company_name: str, session) -> list[dict]:
     html = fetch_url(search_url, session)
     polite_sleep(0.5)
 
+    # Presseportal blocks many IPs — try Jina Reader (headless browser bypass)
+    if not html:
+        html = fetch_with_jina(search_url)
+
     if not html:
         query = f'site:presseportal.de "{company_name}" Pressekontakt'
         html = multi_engine_search(query, session)
@@ -152,10 +156,12 @@ def _scrape_presseportal(company_name: str, session) -> list[dict]:
 
     pr_urls = list(dict.fromkeys(pr_urls))
 
-    # Fetch up to 5 press releases
+    # Fetch up to 5 press releases — try Jina if direct fetch fails
     for url in pr_urls[:5]:
         try:
             pr_html = fetch_url(url, session)
+            if not pr_html:
+                pr_html = fetch_with_jina(url)
             if not pr_html or company_kw not in pr_html.lower():
                 continue
             polite_sleep(0.4)

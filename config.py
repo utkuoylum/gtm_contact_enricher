@@ -9,6 +9,10 @@ HUNTER_API_KEY = os.getenv("HUNTER_API_KEY", "")
 # Optional: ScraperAPI key to bypass Google/LinkedIn blocks ($49/mo for 100k requests)
 SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "")
 
+# Optional: Jina AI API key for higher rate limits (free tier works without key)
+# Get free key at: https://jina.ai/
+JINA_API_KEY = os.getenv("JINA_API_KEY", "")
+
 # Request settings
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "15"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "2"))

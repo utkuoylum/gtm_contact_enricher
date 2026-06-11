@@ -7,7 +7,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from urllib.parse import quote_plus
 from bs4 import BeautifulSoup
-from config import USER_AGENTS, REQUEST_TIMEOUT, MAX_RETRIES, SCRAPER_API_KEY
+from config import USER_AGENTS, REQUEST_TIMEOUT, MAX_RETRIES, SCRAPER_API_KEY, JINA_API_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +129,42 @@ def _fetch_via_scraper_api(url: str) -> str | None:
     return None
 
 
+def fetch_with_jina(url: str) -> str | None:
+    """
+    Fetch any URL via Jina AI Reader (r.jina.ai).
+
+    Returns clean markdown text — JS-rendered pages, CloudFront/Cloudflare sites,
+    and other WAF-blocked URLs are all handled transparently by Jina's headless browser.
+
+    Free tier available without API key (rate limited ~10 req/sec).
+    Set JINA_API_KEY env var for higher limits.
+
+    Returns markdown text (not HTML) — pass directly to text-based parsers.
+    """
+    jina_url = f"https://r.jina.ai/{url}"
+    headers: dict[str, str] = {
+        "Accept": "text/plain",
+        "X-Return-Format": "markdown",
+        # Reduce noise — remove nav/header/footer/cookie banners
+        "X-Remove-Selector": "nav,header,footer,cookie-banner,[class*='cookie'],[id*='cookie'],[class*='banner']",
+        # Don't wait forever for dynamic content
+        "X-Timeout": "15",
+    }
+    if JINA_API_KEY:
+        headers["Authorization"] = f"Bearer {JINA_API_KEY}"
+
+    try:
+        resp = requests.get(jina_url, headers=headers, timeout=REQUEST_TIMEOUT + 10)
+        if resp.status_code == 200 and len(resp.text) > 200:
+            logger.debug(f"Jina hit: {url} ({len(resp.text)} chars)")
+            return resp.text
+        logger.debug(f"Jina returned {resp.status_code} for {url}")
+    except requests.RequestException as e:
+        logger.debug(f"Jina error for {url}: {e}")
+
+    return None
+
+
 def polite_sleep(base: float = 1.5):
     time.sleep(base + random.uniform(0, 0.8))
 
@@ -189,11 +225,16 @@ def serp_links(query: str, session: requests.Session = None, num: int = 10) -> l
     seen = set()
     for a in soup.find_all("a", href=True):
         href = a["href"]
-        # Unwrap Google redirect
+        # Unwrap Google redirect (/url?q=...)
         import re
+        from urllib.parse import unquote
         m = re.search(r"/url\?q=(https?://[^&]+)", href)
         if m:
-            href = m.group(1)
+            href = unquote(m.group(1))
+        # Unwrap DuckDuckGo redirect (?uddg=...)
+        m2 = re.search(r"uddg=([^&]+)", href)
+        if m2:
+            href = unquote(m2.group(1))
         if not href.startswith("http"):
             continue
         from urllib.parse import urlparse
