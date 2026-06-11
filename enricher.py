@@ -100,7 +100,7 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
     executor = ThreadPoolExecutor(max_workers=12)
     futures = {executor.submit(fn): name for name, fn in people_tasks.items()}
     try:
-        for future in as_completed(futures, timeout=90):
+        for future in as_completed(futures, timeout=120):
             name = futures[future]
             try:
                 res = future.result()
@@ -348,7 +348,11 @@ def _enrich_emails_with_hunter(
         if contact.get("email"):
             continue
 
-        # Use our email hunter's per-person finder
+        # Use our email hunter's per-person finder — ONLY when we have a confirmed
+        # email pattern. Without one, find_person_email crawls the entire site to
+        # discover the pattern, taking 2+ minutes per contact (× 15 contacts = hang).
+        if not pattern:
+            continue
         try:
             found = find_person_email(first, last, domain, pattern=pattern, max_verify=5)
             if found and found.get("email") and found.get("confidence", 0) >= 30:
