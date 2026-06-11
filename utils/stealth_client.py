@@ -296,39 +296,47 @@ try {
 Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 0});
 """
 
-# Shared browser instance — created once, contexts are per-request (lightweight)
-_pw_instance = None  # playwright context manager
-_pw_browser = None
-_pw_init_lock = threading.Lock()
+# Thread-local storage: each thread gets its own Playwright browser.
+# Playwright sync API uses greenlets — sharing a browser across threads
+# causes "Cannot switch to a different thread" errors.
+_thread_local = threading.local()
+_LAUNCH_ARGS = [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--disable-features=IsolateOrigins,site-per-process",
+    "--window-size=1920,1080",
+    "--disable-extensions",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-default-apps",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+]
 
 
 def _ensure_playwright_browser():
-    global _pw_instance, _pw_browser
-    with _pw_init_lock:
-        if _pw_browser is not None and _pw_browser.is_connected():
-            return _pw_browser
+    """Return (or create) a thread-local Playwright browser instance."""
+    browser = getattr(_thread_local, "browser", None)
+    pw = getattr(_thread_local, "pw", None)
+    if browser is not None and browser.is_connected():
+        return browser
+    # Clean up stale instance
+    if pw is not None:
         try:
-            _pw_instance = _sync_playwright().__enter__()
-            _pw_browser = _pw_instance.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-features=IsolateOrigins,site-per-process",
-                    "--window-size=1920,1080",
-                    "--disable-extensions",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                    "--disable-default-apps",
-                    "--disable-backgrounding-occluded-windows",
-                    "--disable-renderer-backgrounding",
-                ],
-            )
-        except Exception as e:
-            logger.warning(f"Playwright browser launch failed: {e}")
-            _pw_browser = None
-    return _pw_browser
+            pw.__exit__(None, None, None)
+        except Exception:
+            pass
+    try:
+        _thread_local.pw = _sync_playwright().__enter__()
+        _thread_local.browser = _thread_local.pw.chromium.launch(
+            headless=True, args=_LAUNCH_ARGS
+        )
+        return _thread_local.browser
+    except Exception as e:
+        logger.warning(f"Playwright browser launch failed: {e}")
+        _thread_local.browser = None
+        return None
 
 
 def playwright_get(

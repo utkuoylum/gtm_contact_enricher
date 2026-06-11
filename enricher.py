@@ -74,7 +74,7 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
     phone_result = None
 
     # Detect if this is likely a German/DACH company
-    is_dach = _is_dach_location(location) or _is_dach_domain(domain or "")
+    is_dach = _is_dach_location(location) or _is_dach_domain(domain or "") or _is_german_company(company_name)
 
     people_tasks = {
         "linkedin":        lambda: search_linkedin_contacts(company_name, location, job_category),
@@ -97,11 +97,26 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
         people_tasks["website"] = lambda: scrape_company_website(domain)
         people_tasks["email_hunter"] = lambda: hunt_domain(domain, company_name)
 
-    with ThreadPoolExecutor(max_workers=12) as executor:
-        futures = {executor.submit(fn): name for name, fn in people_tasks.items()}
-        try:
-            for future in as_completed(futures, timeout=150):
-                name = futures[future]
+    executor = ThreadPoolExecutor(max_workers=12)
+    futures = {executor.submit(fn): name for name, fn in people_tasks.items()}
+    try:
+        for future in as_completed(futures, timeout=90):
+            name = futures[future]
+            try:
+                res = future.result()
+                if name == "email_hunter":
+                    hunt_result = res
+                elif name == "phone":
+                    phone_result = res
+                else:
+                    raw_contacts.extend(res or [])
+                sources_used.append(name)
+            except Exception as e:
+                errors.append(f"{name}: {e}")
+                logger.error(f"{name} error: {e}", exc_info=True)
+    except FuturesTimeoutError:
+        for future, name in futures.items():
+            if future.done():
                 try:
                     res = future.result()
                     if name == "email_hunter":
@@ -113,24 +128,12 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
                     sources_used.append(name)
                 except Exception as e:
                     errors.append(f"{name}: {e}")
-                    logger.error(f"{name} error: {e}", exc_info=True)
-        except FuturesTimeoutError:
-            for future, name in futures.items():
-                if future.done():
-                    try:
-                        res = future.result()
-                        if name == "email_hunter":
-                            hunt_result = res
-                        elif name == "phone":
-                            phone_result = res
-                        else:
-                            raw_contacts.extend(res or [])
-                        sources_used.append(name)
-                    except Exception as e:
-                        errors.append(f"{name}: {e}")
-                else:
-                    errors.append(f"{name} timed out")
-                    future.cancel()
+            else:
+                errors.append(f"{name} timed out")
+    finally:
+        # Don't block waiting for stragglers — threads that missed the deadline
+        # are abandoned. cancel_futures cancels queued-but-not-started tasks.
+        executor.shutdown(wait=False, cancel_futures=True)
 
     logger.info(f"People found: {len(raw_contacts)}, email_hunter: {hunt_result is not None}, phone: {phone_result is not None}")
 
@@ -148,7 +151,8 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
         for ec in hunt_result.contacts:
             verified_email_map[ec.email] = ec.smtp_status
 
-    # 4. Deduplicate people
+    # 4. Filter out non-persons (company names returned as contacts) then deduplicate
+    raw_contacts = [c for c in raw_contacts if _is_valid_person(c.get("full_name", ""), company_name)]
     deduped = _deduplicate(raw_contacts)
     logger.info(f"After dedup: {len(deduped)} people")
 
@@ -258,6 +262,19 @@ def _is_dach_domain(domain: str) -> bool:
     return tld in ("de", "at", "ch")
 
 
+# German legal entity suffixes that indicate a DACH-registered company,
+# regardless of location string or domain TLD (e.g. wenatex.com).
+_GERMAN_LEGAL_FORMS = re.compile(
+    r"\b(GmbH|AG|KG|UG|e\.K\.|eK|SE|eG|OHG|GbR|GmbH\s*&\s*Co\.?\s*KG)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_german_company(company_name: str) -> bool:
+    """Return True if the company name contains a German legal form."""
+    return bool(_GERMAN_LEGAL_FORMS.search(company_name))
+
+
 def _infer_region(domain: str, location: str) -> str:
     from phone_hunter.validator import region_from_domain, region_from_location
     if location:
@@ -363,3 +380,28 @@ def _merge_into(existing: dict, new: dict):
 
 def _normalize_name(name: str) -> str:
     return re.sub(r"\s+", " ", name.lower().strip())
+
+
+_COMPANY_NAME_NOISE = re.compile(
+    r"\b(GmbH|AG|KG|UG|e\.K\.|eK|SE|eG|OHG|GbR|Ltd\.?|LLC|Inc\.?|Corp\.?|"
+    r"GmbH\s*&\s*Co\.?\s*KG|Kontakt|Contact|Info|Support|Team|Service)\b",
+    re.IGNORECASE,
+)
+_PERSON_NAME = re.compile(r"^[A-ZÜÖÄ][a-züöäß\-]+(?: [A-ZÜÖÄ][a-züöäß\-]+)+$")
+
+
+def _is_valid_person(name: str, company_name: str) -> bool:
+    """Return False if the name looks like a company name rather than a real person."""
+    if not name or len(name) < 4:
+        return False
+    # Reject if name contains company legal forms or generic labels
+    if _COMPANY_NAME_NOISE.search(name):
+        return False
+    # Reject if name is identical (or near-identical) to company name
+    if name.lower().strip() == company_name.lower().strip():
+        return False
+    # Must look like a personal name: 2+ words, each starting with uppercase
+    parts = name.strip().split()
+    if len(parts) < 2 or len(parts) > 5:
+        return False
+    return all(p[0].isupper() for p in parts if p)

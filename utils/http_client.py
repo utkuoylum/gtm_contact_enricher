@@ -66,6 +66,7 @@ def get_session() -> requests.Session:
     session = requests.Session()
     retry = Retry(
         total=MAX_RETRIES,
+        connect=0,       # don't retry connection timeouts — they signal a blocked host
         backoff_factor=1.5,
         status_forcelist=[429, 500, 502, 503, 504],
         allowed_methods=["GET", "POST"],
@@ -77,14 +78,18 @@ def get_session() -> requests.Session:
     return session
 
 
-def fetch_url(url: str, session: requests.Session = None, use_scraper_api: bool = False) -> str | None:
+def fetch_url(url: str, session: requests.Session = None, use_scraper_api: bool = False,
+              use_playwright: bool = False) -> str | None:
     """
     Fetch URL with tiered anti-detection fallback chain:
 
     Tier 1: curl_cffi Chrome impersonation (TLS/JA3/H2 fingerprint spoof)
     Tier 2: Rotated browser headers via requests (basic WAF bypass)
-    Tier 3: Playwright headless browser with stealth patches (JS challenges, SPAs)
-    Tier 4: ScraperAPI (if key configured)
+    Tier 3: ScraperAPI (if key configured)
+
+    Playwright is NOT included in the default chain to avoid multi-second latency
+    on every blocked URL. Pass use_playwright=True to enable it explicitly after
+    all other tiers have failed.
 
     Callers can add Jina AI Reader as a further fallback after this function returns None.
     """
@@ -110,15 +115,17 @@ def fetch_url(url: str, session: requests.Session = None, use_scraper_api: bool 
         if retry_result:
             return retry_result
 
-    # Tier 3: Playwright (full JS rendering + stealth patches)
-    if _PLAYWRIGHT_AVAILABLE:
+    # Tier 3: ScraperAPI
+    if SCRAPER_API_KEY and use_scraper_api:
+        return _fetch_via_scraper_api(url)
+
+    # Optional Tier: Playwright (full JS rendering + stealth patches)
+    # Only runs when explicitly requested — each call takes ~5s, which multiplies
+    # badly when there are 30+ paths to probe.
+    if use_playwright and _PLAYWRIGHT_AVAILABLE:
         result = playwright_get(url)
         if result:
             return result
-
-    # Tier 4: ScraperAPI
-    if SCRAPER_API_KEY and use_scraper_api:
-        return _fetch_via_scraper_api(url)
 
     return None
 
@@ -190,27 +197,36 @@ def polite_sleep(base: float = 1.5):
 # Multi-engine search — tries engines in order, returns first successful HTML
 # ---------------------------------------------------------------------------
 
+_DDG_AVAILABLE = True   # flipped to False on first connection timeout — stays False for session
+_SEARCH_CONNECT_TIMEOUT = 6   # connect timeout for search engines (fast-fail on network block)
+
+
 def multi_engine_search(query: str, session: requests.Session = None, num: int = 10) -> str | None:
     """
     Try multiple search engines in order. Returns raw HTML of first successful result.
     Order: DuckDuckGo (least blocking) → Bing → Google (most blocking).
     Uses curl_cffi TLS impersonation as primary method for all engines.
+    DuckDuckGo is skipped for the rest of the session after the first connect timeout.
     """
+    global _DDG_AVAILABLE
     encoded = quote_plus(query)
 
-    engines = [
-        # DuckDuckGo HTML (very permissive, no captcha on moderate use)
-        f"https://html.duckduckgo.com/html/?q={encoded}",
-        # Bing (moderate blocking)
-        f"https://www.bing.com/search?q={encoded}&count={num}",
-        # Google (most blocking, last resort)
-        f"https://www.google.com/search?q={encoded}&num={num}",
-    ]
+    ddg_url = f"https://html.duckduckgo.com/html/?q={encoded}"
+    bing_url = f"https://www.bing.com/search?q={encoded}&count={num}"
+    google_url = f"https://www.google.com/search?q={encoded}&num={num}"
+
+    engines = []
+    if _DDG_AVAILABLE:
+        engines.append(ddg_url)
+    engines += [bing_url, google_url]
 
     for url in engines:
-        # Tier 1: curl_cffi
+        is_ddg = "duckduckgo" in url
+        conn_timeout = _SEARCH_CONNECT_TIMEOUT if is_ddg else REQUEST_TIMEOUT
+
+        # Tier 1: curl_cffi (short timeout for DDG to fail fast)
         if _CURL_CFFI_AVAILABLE:
-            html = cffi_get(url, timeout=REQUEST_TIMEOUT)
+            html = cffi_get(url, timeout=conn_timeout)
             if html and len(html) > 1000 and not is_bot_blocked(html):
                 return html
             polite_sleep(0.3)
@@ -218,16 +234,19 @@ def multi_engine_search(query: str, session: requests.Session = None, num: int =
         # Tier 2: regular requests fallback
         _session = session or get_session()
         try:
-            resp = _session.get(url, timeout=REQUEST_TIMEOUT)
+            resp = _session.get(url, timeout=(conn_timeout, REQUEST_TIMEOUT))
             if resp.status_code == 200 and len(resp.text) > 1000 and not is_bot_blocked(resp.text):
                 return resp.text
+        except requests.exceptions.ConnectTimeout:
+            if is_ddg:
+                _DDG_AVAILABLE = False   # DDG unreachable — skip for rest of session
+                logger.debug("DuckDuckGo connect timeout — disabling for this session")
         except requests.RequestException:
             pass
         polite_sleep(0.5)
 
     # Last resort: ScraperAPI with Google
     if SCRAPER_API_KEY:
-        google_url = f"https://www.google.com/search?q={encoded}&num={num}"
         return _fetch_via_scraper_api(google_url)
 
     return None

@@ -28,7 +28,7 @@ _EXEC_ROLES = [
 _ROLE_PATTERN = re.compile(
     r"([A-ZÜÖÄ][a-züöäß\-]+(?:\s[A-ZÜÖÄ][a-züöäß\-]+)+)"  # Name (incl. German umlauts)
     r",?\s*[-–]?\s*"
-    r"(CEO|CFO|CTO|COO|CHRO|CPO|Founder|Co-Founder|Managing Director|MD|"
+    r"\b(CEO|CFO|CTO|COO|CHRO|CPO|Founder|Co-Founder|Managing Director|MD|"
     r"Chief Executive|President|Director|VP|Vice President|"
     r"HR Director|HR Manager|Head of HR|Chief People Officer|"
     r"Talent Acquisition|Owner|Partner|Head of \w+|"
@@ -152,6 +152,9 @@ def _extract_contacts_from_serp(html: str, company_name: str, domain: str) -> li
         "our", "the", "new", "all", "your", "this", "or", "and", "not",
         "inhaber", "prokurist", "geschäftsführer", "vorstand",
         "service", "support", "kontakt", "unsere", "unser",
+        # Title keywords that appear as name fragments when regex splits mid-word
+        "managing", "chief", "head", "director", "vice", "senior",
+        "executive", "officer", "president", "general", "regional",
     }
     for match in _ROLE_PATTERN.finditer(text):
         name = match.group(1).strip()

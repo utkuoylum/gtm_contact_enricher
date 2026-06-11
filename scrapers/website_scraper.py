@@ -63,6 +63,9 @@ def scrape_company_website(domain: str) -> list[dict]:
 
     # First check homepage for emails/phones
     html = fetch_url(base_url, session, use_scraper_api=True)
+    # If homepage itself is unreachable, treat the whole domain as WAF-blocked.
+    # This lets the path loop skip Jina/Wayback immediately (each costs ~15s per path).
+    _domain_hard_blocked = (html is None)
     if html:
         for e in extract_email_from_text(html):
             emails_found.add(e)
@@ -72,16 +75,40 @@ def scrape_company_website(domain: str) -> list[dict]:
 
     # Then hit team/about/impressum pages
     discovered_people = []
+    # Limit Claude to a single call per scrape run — with 30+ paths, calling Claude
+    # for every page that yields no results would produce 7+ API calls per run.
+    _claude_called = False
+    # On hard-blocked domains only try legally-required / highest-value paths.
+    # Keep this list short (< 8) so the scraper stays fast even when fully blocked.
+    _CRITICAL_PATHS = {
+        "/impressum", "/imprint", "/kontakt", "/contact", "/contact-us",
+        "/team", "/about",
+    }
+    _consecutive_fails = 0
+    # Budget-limit expensive fallbacks: Jina takes ~25s/call, Wayback ~5s/call.
+    # Without limits, 3 blocked paths × (Jina + Wayback) = 90s before hard_blocked fires.
+    _jina_budget = 1    # call Jina at most once per scrape run
+    _wayback_budget = 2  # call Wayback at most twice per scrape run
     for path in TEAM_PAGE_PATHS:
+        # Once blocked, skip non-critical paths entirely (each fetch_url costs ~4s)
+        if _domain_hard_blocked and path not in _CRITICAL_PATHS:
+            continue
         url = base_url + path
         html = fetch_url(url, session, use_scraper_api=True)
-        # If blocked: try Jina Reader (handles JS + WAF), then Wayback Machine
-        if not html:
+        # Fallbacks: Jina handles JS/WAF, Wayback Machine serves cached pages.
+        # Both are budget-limited to keep total scrape time predictable.
+        if not html and _jina_budget > 0:
             html = fetch_with_jina(url)
-        if not html:
+            _jina_budget -= 1
+        if not html and _wayback_budget > 0 and not _domain_hard_blocked:
             html = _fetch_wayback(domain, path)
+            _wayback_budget -= 1
         if not html:
+            _consecutive_fails += 1
+            if _consecutive_fails >= 3:
+                _domain_hard_blocked = True
             continue
+        _consecutive_fails = 0  # reset on success
         polite_sleep(0.8)
 
         for e in extract_email_from_text(html):
@@ -94,18 +121,20 @@ def scrape_company_website(domain: str) -> list[dict]:
             impressum_people = _parse_impressum(html)
             if impressum_people:
                 discovered_people.extend(impressum_people)
-            elif claude_available():
+            elif claude_available() and not _claude_called:
                 soup_text = BeautifulSoup(html, "html.parser").get_text(separator="\n")
                 claude_people = parse_impressum_with_claude(soup_text, domain)
                 discovered_people.extend(claude_people)
+                _claude_called = True
             continue  # Skip generic parser for impressum pages
 
         people = _parse_team_page(html, domain)
-        # If team/about page yielded nothing — try Claude as last resort
-        if not people and claude_available() and path in ("/team", "/about", "/about-us", "/leadership", "/management", "/unternehmen"):
+        # If team/about page yielded nothing — try Claude as last resort (once per run)
+        if not people and claude_available() and not _claude_called and path in ("/team", "/about", "/about-us", "/leadership", "/management", "/unternehmen"):
             soup_text = BeautifulSoup(html, "html.parser").get_text(separator="\n")
             if len(soup_text) > 300:
                 people = extract_contacts_from_text(soup_text, domain, source_hint="team_page")
+                _claude_called = True
         discovered_people.extend(people)
 
     # Deduplicate people by name
