@@ -25,6 +25,7 @@ from scrapers.german_directories import find_german_directory_contacts
 from scrapers.openregister import find_german_register_officers
 from scrapers.press_scraper import find_press_contacts
 from scrapers.job_portal_scraper import find_job_portal_contacts
+from scrapers.apollo_scraper import search_apollo_contacts, apollo_available
 from email_hunter import hunt_domain, find_person_email
 from email_hunter.smtp_verifier import verify_emails_bulk
 from phone_hunter import hunt_company_phone, hunt_direct_line
@@ -84,6 +85,9 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
         "news":            lambda: find_executives_in_news(company_name, location),
         "phone":           lambda: hunt_company_phone(company_name, domain or "", location),
     }
+
+    if apollo_available():
+        people_tasks["apollo"] = lambda: search_apollo_contacts(company_name, location, job_category)
 
     # DACH-specific sources (highest quality for German companies)
     if is_dach:
