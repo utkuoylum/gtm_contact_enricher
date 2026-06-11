@@ -23,6 +23,11 @@ TARGET_TITLES = [
     "HR Director", "Head of HR", "Chief People Officer", "VP HR",
     "Talent Acquisition", "HR Manager", "Recruiting Manager",
     "Head of Talent", "CHRO", "CPO", "Director",
+    # DACH titles
+    "Geschäftsführer", "Geschäftsführerin", "Inhaber", "Inhaberin",
+    "Personalleiter", "Personalleiterin", "Personalreferent", "Personalreferentin",
+    "HR Business Partner", "Recruiter", "Recruiterin",
+    "Vorstand", "Prokurist", "Prokurentin",
 ]
 
 _SNIPPET_TITLE_PATTERNS = [
@@ -36,6 +41,8 @@ _SNIPPET_TITLE_PATTERNS = [
     r",\s*(.{5,60}?)\s+(?:at|@|bei)\s+",
     # "Title · Company": name already in URL, title first in snippet
     r"^([A-Za-z /&\-]{5,60}?)\s*[·•|]",
+    # German: "Geschäftsführer bei Company" in snippet
+    r"(Geschäftsführer(?:in)?|Inhaber(?:in)?|Personalleiter(?:in)?|Personalreferent(?:in)?|HR\s+\w+|Vorstand|Prokurist)\s+(?:bei|von|der|des|at)\s+",
 ]
 
 
@@ -67,6 +74,14 @@ def _build_queries(company_name: str, location: str, job_category: str) -> list[
     name_q = f'"{company_name}"'
     loc = f'"{location}"' if location else ""
 
+    # Detect DACH company for German-specific queries
+    _dach_locs = {
+        "hamburg", "berlin", "münchen", "munich", "frankfurt", "köln", "cologne",
+        "düsseldorf", "stuttgart", "hannover", "germany", "deutschland",
+        "austria", "österreich", "switzerland", "schweiz", "wien", "zürich",
+    }
+    is_dach = any(d in location.lower() for d in _dach_locs) if location else False
+
     queries = [
         # HR/People ops roles — highest priority for job agency
         f'{site} {name_q} ("HR Director" OR "Head of HR" OR "Chief People" OR "Talent Acquisition" OR "CHRO") {loc}',
@@ -76,8 +91,18 @@ def _build_queries(company_name: str, location: str, job_category: str) -> list[
         f'{site} {name_q} ("HR Manager" OR "Recruiting Manager" OR "Head of Talent" OR "People Manager") {loc}',
     ]
 
+    if is_dach:
+        # German-specific LinkedIn queries
+        queries.append(
+            f'{site} {name_q} (Geschäftsführer OR Inhaber OR Personalleiter OR Personalleiterin) {loc}'
+        )
+        queries.append(
+            f'{site} {name_q} (Personalreferent OR "HR Business Partner" OR Recruiter OR Prokurist) {loc}'
+        )
+        # Company page people
+        queries.append(f'site:linkedin.com/company {name_q} Mitarbeiter OR Mitarbeiterinnen')
+
     if job_category:
-        # Relevant category manager
         queries.append(f'{site} {name_q} "{job_category}" manager OR director {loc}')
 
     # Broad sweep

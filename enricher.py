@@ -23,6 +23,8 @@ from scrapers.news_scraper import find_executives_in_news
 from scrapers.xing_scraper import find_xing_contacts
 from scrapers.german_directories import find_german_directory_contacts
 from scrapers.openregister import find_german_register_officers
+from scrapers.press_scraper import find_press_contacts
+from scrapers.job_portal_scraper import find_job_portal_contacts
 from email_hunter import hunt_domain, find_person_email
 from email_hunter.smtp_verifier import verify_emails_bulk
 from phone_hunter import hunt_company_phone, hunt_direct_line
@@ -85,15 +87,17 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
 
     # DACH-specific sources (highest quality for German companies)
     if is_dach:
-        people_tasks["xing"]              = lambda: find_xing_contacts(company_name, location)
-        people_tasks["german_register"]   = lambda: find_german_register_officers(company_name, location)
+        people_tasks["xing"]               = lambda: find_xing_contacts(company_name, location)
+        people_tasks["german_register"]    = lambda: find_german_register_officers(company_name, location)
         people_tasks["german_directories"] = lambda: find_german_directory_contacts(company_name, location)
+        people_tasks["press"]              = lambda: find_press_contacts(company_name, location)
+        people_tasks["job_portals"]        = lambda: find_job_portal_contacts(company_name, location)
 
     if domain:
         people_tasks["website"] = lambda: scrape_company_website(domain)
         people_tasks["email_hunter"] = lambda: hunt_domain(domain, company_name)
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=12) as executor:
         futures = {executor.submit(fn): name for name, fn in people_tasks.items()}
         try:
             for future in as_completed(futures, timeout=150):
@@ -338,7 +342,10 @@ def _merge_into(existing: dict, new: dict):
             existing[key] = new[key]
     priority = {
         "website_schema": 0, "linkedin_google": 1, "website_card": 2,
-        "website_email": 3, "crunchbase": 4, "google_serp": 5, "website_text": 6,
+        "presseportal_contact": 3, "website_email": 4, "crunchbase": 5,
+        "northdata_web": 6, "northdata": 6, "impressum": 7,
+        "press_release": 8, "google_serp": 9, "job_portal": 10,
+        "website_text": 11, "press_serp": 12,
     }
     if priority.get(new.get("source", ""), 99) < priority.get(existing.get("source", ""), 99):
         existing["source"] = new["source"]

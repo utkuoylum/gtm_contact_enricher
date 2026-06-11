@@ -44,6 +44,14 @@ def find_executives_in_news(company_name: str, location: str = "") -> list[dict]
     session = get_session()
     all_text_blocks: list[str] = []
 
+    # Detect DACH company
+    _dach_locs = {
+        "hamburg", "berlin", "münchen", "munich", "frankfurt", "köln",
+        "düsseldorf", "stuttgart", "hannover", "germany", "deutschland",
+        "austria", "österreich", "switzerland", "schweiz",
+    }
+    is_dach = any(d in location.lower() for d in _dach_locs) if location else False
+
     # 1. Bing News
     bing_results = _bing_news_search(company_name, session)
     all_text_blocks.extend(bing_results)
@@ -52,8 +60,15 @@ def find_executives_in_news(company_name: str, location: str = "") -> list[dict]
     gnews_results = _google_news_rss(company_name, session)
     all_text_blocks.extend(gnews_results)
 
-    # 3. PR Newswire
-    if len(all_text_blocks) < 3:
+    # 3. German-specific: Google News DE + Presseportal SERP
+    if is_dach:
+        de_results = _google_news_rss_de(company_name, session)
+        all_text_blocks.extend(de_results)
+        pp_results = _presseportal_serp(company_name, session)
+        all_text_blocks.extend(pp_results)
+
+    # 4. PR Newswire (fallback for non-DACH)
+    if not is_dach and len(all_text_blocks) < 3:
         pr_results = _prnewswire_search(company_name, session)
         all_text_blocks.extend(pr_results)
 
@@ -126,6 +141,51 @@ def _prnewswire_search(company_name: str, session) -> list[str]:
         desc = item.find("description")
         if desc:
             snippets.append(desc.get_text())
+
+    return snippets[:5]
+
+
+def _google_news_rss_de(company_name: str, session) -> list[str]:
+    """Google News RSS in German — finds DACH press coverage."""
+    query = quote_plus(f'"{company_name}" Geschäftsführer OR Inhaber OR CEO OR Personalleiter')
+    url = f"https://news.google.com/rss/search?q={query}&hl=de&gl=DE&ceid=DE:de"
+    html = fetch_url(url, session)
+    if not html:
+        return []
+
+    polite_sleep(0.5)
+    soup = BeautifulSoup(html, "lxml-xml")
+    snippets = []
+    for item in soup.find_all("item"):
+        title = item.find("title")
+        desc = item.find("description")
+        text = f"{title.get_text() if title else ''} {desc.get_text() if desc else ''}"
+        snippets.append(text)
+
+    return snippets[:8]
+
+
+def _presseportal_serp(company_name: str, session) -> list[str]:
+    """Mine Presseportal.de snippets via SERP for executive mentions."""
+    query = f'site:presseportal.de "{company_name}" Geschäftsführer OR Pressekontakt'
+    html = multi_engine_search(query, session)
+    if not html:
+        return []
+
+    polite_sleep(0.5)
+    soup = BeautifulSoup(html, "html.parser")
+    snippets = []
+    company_kw = company_name.lower().split()[0]
+
+    for result in soup.select(".b_algo, .g, [class*='result']"):
+        text = result.get_text(separator=" ", strip=True)
+        if company_kw in text.lower():
+            snippets.append(text)
+
+    # Also add raw page text
+    full_text = soup.get_text(separator="\n")
+    if company_kw in full_text.lower():
+        snippets.append(full_text[:3000])
 
     return snippets[:5]
 

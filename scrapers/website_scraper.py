@@ -3,7 +3,9 @@ from __future__ import annotations
 Scrape company website for team members, contact info.
 Looks at: /about, /team, /people, /contact, /leadership, /management pages.
 Falls back to Wayback Machine cached versions when the live site blocks access.
+Uses crt.sh to discover additional subdomains (team.company.com, karriere.company.com).
 """
+import json
 import logging
 import re
 import requests
@@ -22,7 +24,10 @@ TEAM_PAGE_PATHS = [
     # German / DACH (Impressum is legally required → always has name, phone, email)
     "/impressum", "/imprint", "/kontakt", "/ueber-uns", "/uber-uns",
     "/unternehmen", "/unternehmen/team", "/ueber-uns/team",
-    "/team-de", "/ansprechpartner",
+    "/team-de", "/ansprechpartner", "/fuehrungsteam", "/fuehrung",
+    "/geschaeftsfuehrung", "/vorstand", "/leitung", "/management-team",
+    "/unser-team", "/das-team", "/wir-ueber-uns", "/uber-uns/team",
+    "/de/team", "/de/kontakt", "/de/impressum", "/de/unternehmen",
     # French
     "/contact-fr", "/equipe", "/a-propos",
     # Spanish/Italian
@@ -32,6 +37,12 @@ TEAM_PAGE_PATHS = [
     # Turkish
     "/iletisim", "/hakkimizda", "/ekibimiz",
 ]
+
+# Subdomains that likely contain team/people pages
+_TEAM_SUBDOMAINS = {
+    "team", "about", "people", "karriere", "career", "careers", "jobs",
+    "personal", "hr", "company", "corporate", "management", "leadership",
+}
 
 NAME_TITLE_PATTERNS = [
     # Tries to find name + title in cards/list items
@@ -45,6 +56,9 @@ def scrape_company_website(domain: str) -> list[dict]:
     contacts = []
     emails_found = set()
     phones_found = set()
+
+    # Discover additional subdomains via crt.sh (finds team.company.com, karriere.company.com etc.)
+    extra_bases = _discover_team_subdomains(domain)
 
     # First check homepage for emails/phones
     html = fetch_url(base_url, session, use_scraper_api=True)
@@ -137,7 +151,56 @@ def scrape_company_website(domain: str) -> list[dict]:
         if not p.get("phone") and generic_phone:
             p["phone"] = generic_phone
 
+    # Check extra subdomains discovered via crt.sh
+    for subdomain_base in extra_bases[:3]:
+        for path in ["/", "/team", "/about", "/contact", "/people", "/leadership"]:
+            url = subdomain_base + path
+            sub_html = fetch_url(url, session)
+            if not sub_html:
+                continue
+            polite_sleep(0.5)
+            for e in extract_email_from_text(sub_html):
+                emails_found.add(e)
+            sub_people = _parse_team_page(sub_html, domain)
+            for p in sub_people:
+                key = p.get("full_name", "").lower().strip()
+                if key and key not in seen_names:
+                    seen_names.add(key)
+                    if not p.get("phone") and generic_phone:
+                        p["phone"] = generic_phone
+                    unique_people.append(p)
+
     return unique_people[:20]
+
+
+def _discover_team_subdomains(domain: str) -> list[str]:
+    """
+    Query crt.sh (Certificate Transparency logs) to find subdomains that
+    may contain team/people/career pages (e.g. team.company.com).
+    """
+    try:
+        resp = requests.get(
+            f"https://crt.sh/?q=%.{domain}&output=json",
+            timeout=8,
+            headers={"Accept": "application/json"},
+        )
+        if resp.status_code != 200:
+            return []
+        entries = resp.json()
+        found: set[str] = set()
+        for entry in entries:
+            names = entry.get("name_value", "")
+            for name in names.split("\n"):
+                name = name.strip().lstrip("*.")
+                if name and "." in name and name.endswith(domain):
+                    # Extract subdomain part
+                    sub = name[: -(len(domain) + 1)].lower()
+                    if sub and sub in _TEAM_SUBDOMAINS:
+                        found.add(f"https://{name}")
+        return list(found)[:5]
+    except Exception as e:
+        logger.debug(f"crt.sh lookup failed for {domain}: {e}")
+        return []
 
 
 def _parse_impressum(html: str) -> list[dict]:
