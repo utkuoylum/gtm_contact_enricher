@@ -8,6 +8,7 @@ from urllib3.util.retry import Retry
 from urllib.parse import quote_plus
 from bs4 import BeautifulSoup
 from config import USER_AGENTS, REQUEST_TIMEOUT, MAX_RETRIES, SCRAPER_API_KEY, JINA_API_KEY
+from utils.stealth_client import cffi_get, playwright_get, is_bot_blocked, _CURL_CFFI_AVAILABLE, _PLAYWRIGHT_AVAILABLE
 
 logger = logging.getLogger(__name__)
 
@@ -78,31 +79,47 @@ def get_session() -> requests.Session:
 
 def fetch_url(url: str, session: requests.Session = None, use_scraper_api: bool = False) -> str | None:
     """
-    Fetch URL with automatic fallback chain:
-    1. Current session headers
-    2. Rotate to a different browser header set (bypasses basic WAF rules)
-    3. ScraperAPI (if key configured)
+    Fetch URL with tiered anti-detection fallback chain:
+
+    Tier 1: curl_cffi Chrome impersonation (TLS/JA3/H2 fingerprint spoof)
+    Tier 2: Rotated browser headers via requests (basic WAF bypass)
+    Tier 3: Playwright headless browser with stealth patches (JS challenges, SPAs)
+    Tier 4: ScraperAPI (if key configured)
+
+    Callers can add Jina AI Reader as a further fallback after this function returns None.
     """
+    # Tier 1: curl_cffi — bypasses TLS fingerprinting at handshake level
+    if _CURL_CFFI_AVAILABLE:
+        result = cffi_get(url, timeout=REQUEST_TIMEOUT + 5)
+        if result:
+            return result
+
+    # Tier 2: regular requests with rotated browser headers
     _session = session or get_session()
     try:
         resp = _session.get(url, timeout=REQUEST_TIMEOUT)
-        if resp.status_code == 200:
+        if resp.status_code == 200 and not is_bot_blocked(resp.text):
             return resp.text
-        if resp.status_code in (403, 429, 503):
-            # Try a different browser header set before giving up
+        if resp.status_code in (403, 429, 503) or is_bot_blocked(getattr(resp, "text", "")):
             retry_result = _fetch_with_rotated_headers(url)
             if retry_result:
                 return retry_result
-            if SCRAPER_API_KEY:
-                return _fetch_via_scraper_api(url)
-            logger.debug(f"Blocked ({resp.status_code}): {url}")
     except requests.RequestException as e:
         logger.debug(f"Request error for {url}: {e}")
         retry_result = _fetch_with_rotated_headers(url)
         if retry_result:
             return retry_result
-        if SCRAPER_API_KEY and use_scraper_api:
-            return _fetch_via_scraper_api(url)
+
+    # Tier 3: Playwright (full JS rendering + stealth patches)
+    if _PLAYWRIGHT_AVAILABLE:
+        result = playwright_get(url)
+        if result:
+            return result
+
+    # Tier 4: ScraperAPI
+    if SCRAPER_API_KEY and use_scraper_api:
+        return _fetch_via_scraper_api(url)
+
     return None
 
 
@@ -177,8 +194,8 @@ def multi_engine_search(query: str, session: requests.Session = None, num: int =
     """
     Try multiple search engines in order. Returns raw HTML of first successful result.
     Order: DuckDuckGo (least blocking) → Bing → Google (most blocking).
+    Uses curl_cffi TLS impersonation as primary method for all engines.
     """
-    _session = session or get_session()
     encoded = quote_plus(query)
 
     engines = [
@@ -191,12 +208,21 @@ def multi_engine_search(query: str, session: requests.Session = None, num: int =
     ]
 
     for url in engines:
+        # Tier 1: curl_cffi
+        if _CURL_CFFI_AVAILABLE:
+            html = cffi_get(url, timeout=REQUEST_TIMEOUT)
+            if html and len(html) > 1000 and not is_bot_blocked(html):
+                return html
+            polite_sleep(0.3)
+
+        # Tier 2: regular requests fallback
+        _session = session or get_session()
         try:
             resp = _session.get(url, timeout=REQUEST_TIMEOUT)
-            if resp.status_code == 200 and len(resp.text) > 1000:
+            if resp.status_code == 200 and len(resp.text) > 1000 and not is_bot_blocked(resp.text):
                 return resp.text
         except requests.RequestException:
-            continue
+            pass
         polite_sleep(0.5)
 
     # Last resort: ScraperAPI with Google

@@ -9,3 +9,8 @@ python-dotenv>=1.0.0
 pydantic>=2.7.0
 python-whois>=0.9.4
 phonenumbers>=8.13.0
+# Anti-detection: Chrome TLS/H2 fingerprint impersonation (bypasses JA3/JA4 fingerprinting)
+curl_cffi>=0.7.0
+# Anti-detection: headless browser with stealth patches (bypasses JS challenges, SPAs)
+# After install run: playwright install chromium
+playwright>=1.44.0
