@@ -12,10 +12,10 @@ import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 
-from models import Contact, PhoneDetail, EnrichmentResult
+from models import Contact, PhoneDetail, EnrichmentResult, CompanyContactInfo
 from utils.domain_finder import find_company_domain
 from utils.rater import rate_contact, recency_adjustment
-from scrapers.website_scraper import scrape_company_website
+from scrapers.website_scraper import scrape_company_website, get_company_generic_email
 from scrapers.linkedin_scraper import search_linkedin_contacts
 from scrapers.google_scraper import google_contact_search, scrape_crunchbase_people
 from scrapers.companies_house import find_company_officers
@@ -96,9 +96,11 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
     if domain:
         people_tasks["website"] = lambda: scrape_company_website(domain)
         people_tasks["email_hunter"] = lambda: hunt_domain(domain, company_name)
+        people_tasks["company_email"] = lambda: get_company_generic_email(domain)
 
     executor = ThreadPoolExecutor(max_workers=12)
     futures = {executor.submit(fn): name for name, fn in people_tasks.items()}
+    company_generic_email: str | None = None
     try:
         for future in as_completed(futures, timeout=120):
             name = futures[future]
@@ -108,6 +110,8 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
                     hunt_result = res
                 elif name == "phone":
                     phone_result = res
+                elif name == "company_email":
+                    company_generic_email = res
                 else:
                     raw_contacts.extend(res or [])
                 sources_used.append(name)
@@ -123,6 +127,8 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
                         hunt_result = res
                     elif name == "phone":
                         phone_result = res
+                    elif name == "company_email":
+                        company_generic_email = res
                     else:
                         raw_contacts.extend(res or [])
                     sources_used.append(name)
@@ -143,6 +149,14 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
         result.company_phone = pi.e164 or pi.international or pi.raw
         result.company_phone_detail = _phone_info_to_model(pi)
         errors.extend(phone_result.errors)
+
+    # 2c. Build company_contact_info (company-level data, not tied to a person)
+    result.company_contact_info = CompanyContactInfo(
+        phone=result.company_phone,
+        phone_detail=result.company_phone_detail,
+        email=company_generic_email or None,
+        website=f"https://{domain}" if domain else None,
+    )
 
     # 3. Extract email intelligence from hunt_result
     pattern = hunt_result.pattern if hunt_result else None
@@ -179,6 +193,40 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
         except Exception as e:
             errors.append(f"claude_synthesis: {e}")
 
+    # 4c. Claude evaluation: score confidence 0-100, confirm employment, keep top 5
+    if deduped:
+        try:
+            from utils.claude_extractor import evaluate_contacts, claude_available
+            if claude_available():
+                slim = [
+                    {
+                        "full_name": c.get("full_name", ""),
+                        "title": c.get("title"),
+                        "source": c.get("source", ""),
+                        "year_found": c.get("year_found"),
+                        "has_email": bool(c.get("email")),
+                        "has_linkedin_url": bool(c.get("linkedin_url")),
+                    }
+                    for c in deduped
+                ]
+                evaluated = evaluate_contacts(slim, company_name, location, job_category)
+                if evaluated is not None:
+                    # Map Claude's scores back to the full contact dicts by name
+                    score_map = {e.get("full_name", "").lower(): e for e in evaluated}
+                    surviving = {e.get("full_name", "").lower() for e in evaluated}
+                    new_deduped = []
+                    for c in deduped:
+                        key = c.get("full_name", "").lower()
+                        if key in surviving:
+                            c["confidence"] = score_map[key].get("confidence", 0)
+                            c["employment_confirmed"] = score_map[key].get("employment_confirmed", False)
+                            new_deduped.append(c)
+                    deduped = new_deduped
+                    # Sort by confidence desc so email enrichment focuses on best candidates
+                    deduped.sort(key=lambda c: -c.get("confidence", 0))
+        except Exception as e:
+            errors.append(f"claude_evaluate: {e}")
+
     # 5. Enrich each person with email (using our own hunter)
     if domain:
         _enrich_emails_with_hunter(deduped, domain, pattern, hunt_result, errors)
@@ -193,10 +241,6 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
                 verified_email_map[vr.email] = vr.status
         except Exception as e:
             errors.append(f"bulk_verify: {e}")
-
-    # 7. Prepare company phone for contact attachment
-    company_phone_str = result.company_phone or None
-    company_phone_detail = result.company_phone_detail
 
     # 7b. Optional: hunt direct lines for top-rated contacts
     region = _infer_region(domain or "", location)
@@ -248,6 +292,8 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
             source=raw.get("source", "unknown"),
             rating=rating,
             rating_reason=reason,
+            confidence=raw.get("confidence", 0),
+            employment_confirmed=raw.get("employment_confirmed", False),
             data_year=raw.get("year_found"),
             recency_note=rec_note,
         )
@@ -255,8 +301,9 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
         c._recency_adj = rec_adj  # type: ignore[attr-defined]
         contacts.append(c)
 
-    # Sort: primary = title authority + recency penalty (float), secondary = has email, tertiary = verified
+    # Sort: primary = confidence (Claude-assessed), secondary = title authority + recency, tertiary = has email
     contacts.sort(key=lambda c: (
+        -(c.confidence),
         c.rating + getattr(c, "_recency_adj", 0.0),
         0 if c.email else 1,
         0 if c.email_verified else 1,

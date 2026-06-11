@@ -25,40 +25,51 @@ class PhoneDetail(BaseModel):
     confidence: int = 0
 
 
+class CompanyContactInfo(BaseModel):
+    """Company-level contact data — not tied to any individual person."""
+    phone: Optional[str] = None               # main number (E.164)
+    phone_detail: Optional[PhoneDetail] = None
+    email: Optional[str] = None               # best generic contact email (info@, kontakt@)
+    website: Optional[str] = None
+    address: Optional[str] = None
+
+
 class Contact(BaseModel):
     full_name: str
     title: Optional[str] = None
     company: str
     email: Optional[str] = None
     email_verified: Optional[bool] = None
-    # phone: legacy string (company main number, quick access)
-    phone: Optional[str] = None
-    phone_detail: Optional[PhoneDetail] = None       # structured phone data
-    direct_phone: Optional[str] = None              # direct line if found
+    phone: Optional[str] = None              # direct line only (null if only company number known)
+    phone_detail: Optional[PhoneDetail] = None
+    direct_phone: Optional[str] = None
     direct_phone_detail: Optional[PhoneDetail] = None
     linkedin_url: Optional[str] = None
     source: str
     rating: int = Field(ge=1, le=5)
     rating_reason: str
-    data_year: Optional[int] = None      # year the data was sourced (from press release date, snippet, etc.)
-    recency_note: Optional[str] = None   # human-readable explanation of recency adjustment
+    confidence: int = Field(default=0, ge=0, le=100)   # 0-100: how confident person currently works here
+    employment_confirmed: bool = False                  # confirmed via LinkedIn/Xing/company page/register
+    data_year: Optional[int] = None
+    recency_note: Optional[str] = None
 
 
 class EnrichmentRequest(BaseModel):
     company_name: str
     location: str = ""
     job_category: str = ""
-    domain: Optional[str] = None  # skip domain discovery if provided (e.g. "ppl-hh.de")
-    callback_url: Optional[str] = None  # if set, async mode; result POSTed here
-    max_contacts: int = Field(default=10, ge=1, le=50)
-    find_direct_lines: bool = False  # enable per-contact direct line hunting (slower)
+    domain: Optional[str] = None
+    callback_url: Optional[str] = None
+    max_contacts: int = Field(default=5, ge=1, le=50)
+    find_direct_lines: bool = False
 
 
 class EnrichmentResult(BaseModel):
     company_name: str
     domain: Optional[str] = None
-    company_phone: Optional[str] = None         # main company number (E.164)
+    company_phone: Optional[str] = None         # kept for backward compat
     company_phone_detail: Optional[PhoneDetail] = None
+    company_contact_info: Optional[CompanyContactInfo] = None
     contacts: List[Contact] = []
     total_found: int = 0
     sources_used: List[str] = []

@@ -345,6 +345,88 @@ def extract_contacts_from_serp(
     return []
 
 
+# ── Contact evaluator — confidence scoring + employment confirmation ───────────
+
+_EVALUATE_SYSTEM = """\
+You are a B2B contact quality evaluator for a recruitment agency.
+Given contacts found for a company, assign each a confidence score and confirm employment.
+
+Confidence score (0–100):
+  90-100: Active LinkedIn/Xing profile explicitly at this company, or Impressum / Handelsregister
+  70-89:  Company website team/about page, press article < 1 year ago with named person+title
+  50-69:  Google SERP mention, press article 1-2 years old, title present
+  < 50:   No clear link to company, old data, or name is not a real person (auto-remove)
+
+employment_confirmed = true ONLY if source is one of:
+  linkedin, xing, website_card, website_schema, impressum, german_register, job_portal, northdata
+
+Rules:
+- Remove entries with confidence < 50 (not reliable enough)
+- Return max 5 contacts ordered by confidence DESC
+- Contacts with the same person (different name spellings) → keep the one with higher confidence
+- Keep ALL original fields and ADD two new fields: confidence (int 0-100), employment_confirmed (bool)
+- If full_name is not a real human name (navigation items, company names, etc.), set confidence=0
+Return ONLY valid JSON array, no explanation."""
+
+
+def evaluate_contacts(
+    contacts: list[dict],
+    company_name: str,
+    location: str = "",
+    job_category: str = "",
+) -> list[dict] | None:
+    """
+    Score contacts 0-100 for current employment confidence, filter to top 5.
+
+    Adds 'confidence' and 'employment_confirmed' to each contact.
+    Returns None on any error (caller should fall back to unscored contacts).
+    """
+    if not claude_available() or not contacts:
+        return None
+
+    user_msg = (
+        f"Company: {company_name}\nLocation: {location}\nJob category: {job_category}\n\n"
+        f"Contacts to evaluate:\n{json.dumps(contacts[:20], ensure_ascii=False)}"
+    )
+
+    try:
+        resp = _client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=2000,
+            system=_EVALUATE_SYSTEM,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        raw = resp.content[0].text.strip()
+        logger.debug(
+            f"Claude evaluate_contacts: "
+            f"{resp.usage.input_tokens} in / {resp.usage.output_tokens} out"
+        )
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list):
+            return None
+
+        result = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            item.setdefault("confidence", 0)
+            item.setdefault("employment_confirmed", False)
+            if item["confidence"] >= 50:
+                result.append(item)
+
+        return result[:5]
+
+    except json.JSONDecodeError as e:
+        logger.debug(f"Claude evaluate_contacts non-JSON: {e}")
+    except Exception as e:
+        logger.warning(f"Claude API error in evaluate_contacts: {e}")
+
+    return None
+
+
 # ── Contact synthesizer / quality controller ───────────────────────────────────
 
 _SYNTHESIZE_SYSTEM = (

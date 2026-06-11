@@ -460,3 +460,41 @@ def _extract_person_from_card(card) -> dict | None:
         "phone": phones[0] if phones else None,
         "source": "website_card",
     }
+
+
+# ── Company-level generic contact info ─────────────────────────────────────────
+
+_GENERIC_EMAIL_PRIORITY = ["kontakt", "info", "contact", "office", "mail", "hallo", "hello"]
+
+
+def get_company_generic_email(domain: str) -> str | None:
+    """
+    Quick scrape of the contact/impressum page for a generic company email.
+    Returns the best match (kontakt@, info@, etc.) or None.
+    Only does 2-3 fast fetches — intended as a lightweight parallel task.
+    """
+    base_url = f"https://{domain}"
+    session = get_session()
+
+    found_emails: list[str] = []
+    for path in ["/impressum", "/kontakt", "/contact", "/contact-us", "/"]:
+        html = fetch_url(base_url + path, session)
+        if not html:
+            continue
+        for e in extract_email_from_text(html):
+            host = e.split("@")[-1].lower()
+            if host == domain or host.endswith("." + domain):
+                found_emails.append(e)
+        if found_emails:
+            break  # stop after first page that has any company email
+
+    if not found_emails:
+        return None
+
+    # Prefer well-known generic prefixes
+    for prefix in _GENERIC_EMAIL_PRIORITY:
+        for e in found_emails:
+            if e.split("@")[0].lower() == prefix:
+                return e
+
+    return found_emails[0]
