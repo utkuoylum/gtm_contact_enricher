@@ -35,18 +35,20 @@ def find_phone_google_maps(company_name: str, location: str = "") -> list[dict]:
 
 
 def _places_api(company_name: str, location: str) -> list[dict]:
-    """Use Google Places API (official, requires key)."""
+    """Use Google Places API (official, requires key).
+    findplacefromtext only supports basic fields — phone must be fetched via Place Details.
+    """
     query = f"{company_name} {location}".strip()
     results = []
 
-    # Step 1: Find Place
+    # Step 1: Find Place — only request fields supported by this endpoint
     try:
         resp = requests.get(
             f"{PLACES_BASE}/findplacefromtext/json",
             params={
                 "input": query,
                 "inputtype": "textquery",
-                "fields": "place_id,name,formatted_phone_number,international_phone_number",
+                "fields": "place_id,name",
                 "key": GOOGLE_MAPS_API_KEY,
             },
             timeout=REQUEST_TIMEOUT,
@@ -55,28 +57,21 @@ def _places_api(company_name: str, location: str) -> list[dict]:
             logger.warning(f"Google Places API status {resp.status_code}")
             return []
         data = resp.json()
+        if data.get("status") not in ("OK", "ZERO_RESULTS"):
+            logger.warning(f"Google Places API: {data.get('status')} — {data.get('error_message', '')}")
+            return []
         candidates = data.get("candidates", [])
     except Exception as e:
         logger.error(f"Google Places API error: {e}")
         return []
 
+    # Step 2: Fetch Place Details to get phone number
     for candidate in candidates[:2]:
-        # Prefer international_phone_number (already in +XX format)
-        phone = candidate.get("international_phone_number") or candidate.get("formatted_phone_number")
-        if phone:
-            results.append({
-                "number": phone,
-                "business_name": candidate.get("name", ""),
-                "source": "google_places_api",
-                "confidence": 95,
-            })
-            continue
-
-        # Fallback: Place Details call for phone
         place_id = candidate.get("place_id")
         if place_id:
             detail = _places_detail(place_id)
             if detail:
+                detail["business_name"] = detail.get("business_name") or candidate.get("name", "")
                 results.append(detail)
 
     return results
