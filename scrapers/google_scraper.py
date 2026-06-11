@@ -126,6 +126,8 @@ def _build_queries(company_name: str, location: str, domain: str) -> list[str]:
         # German-specific: most likely to find Geschäftsführer, Inhaber, etc.
         queries.append(f'{name_q} Geschäftsführer OR Inhaber OR Prokurist Kontakt')
         queries.append(f'{name_q} Personalleiter OR "HR Manager" OR Personalreferent')
+        # Direct email address search — SERP snippets often contain actual email addresses
+        queries.append(f'{name_q} email "@" Kontakt')
         # Email pattern on German domain
         if domain:
             queries.append(f'"@{domain}" {name_q}')
@@ -137,6 +139,8 @@ def _build_queries(company_name: str, location: str, domain: str) -> list[str]:
         queries.append(f'{name_q} "Managing Director" OR "CEO" OR "Founder" email{loc}')
         queries.append(f'{name_q} "HR Director" OR "HR Manager" OR "Head of HR" contact{loc}')
         queries.append(f'{name_q} executive team contact{loc}')
+        # Direct email search
+        queries.append(f'{name_q} email "@" contact{loc}')
         if domain:
             queries.append(f'"@{domain}" {name_q}')
         else:
@@ -154,15 +158,22 @@ def _extract_contacts_from_serp(html: str, company_name: str, domain: str) -> li
     emails = extract_email_from_text(text)
     phones = extract_phone_from_text(text)
 
-    # Filter emails: must match domain if known, or at least not be from huge providers
+    # Accept any business email found in SERP text.
+    # DON'T restrict to the known domain — it might be the global brand site (parkplaza.com)
+    # while the actual contact email is on the local site (parkplazagermany.com).
+    # Filter: drop free email providers and obvious spam traps only.
     filtered_emails = []
     throwaway = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
-                 "icloud.com", "protonmail.com", "aol.com"}
+                 "icloud.com", "protonmail.com", "aol.com", "gmx.de", "web.de", "t-online.de"}
+    company_keywords = {w.lower() for w in re.sub(r"[^a-z0-9 ]", "", company_name.lower()).split() if len(w) >= 4}
     for email in emails:
         email_domain = email.split("@")[-1].lower()
-        if domain and email_domain == domain:
-            filtered_emails.append(email)
-        elif not domain and email_domain not in throwaway:
+        if email_domain in throwaway:
+            continue
+        # Accept if: matches known domain, OR email domain contains a company keyword
+        if (domain and email_domain == domain) or \
+           any(kw in email_domain for kw in company_keywords) or \
+           not domain:
             filtered_emails.append(email)
 
     # Try to pair email with a name from surrounding context

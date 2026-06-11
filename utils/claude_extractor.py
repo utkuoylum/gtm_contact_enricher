@@ -215,8 +215,14 @@ def parse_impressum_with_claude(html_text: str, company_name: str = "") -> list[
 # ── SERP domain finder ─────────────────────────────────────────────────────────
 
 _SERP_DOMAIN_SYSTEM = (
-    "You are a company domain researcher. Return ONLY the bare domain (e.g. 'parkplaza.com'). "
-    "No explanation. If unsure return null."
+    "You are a company domain researcher. Given a company name, location, and search results, "
+    "identify the company's PRIMARY contact website for that specific location. "
+    "CRITICAL: For companies in Germany/Austria/Switzerland, prefer the LOCAL German site over "
+    "global brand sites. Example: for 'Park Plaza Berlin' prefer 'parkplazagermany.com' over "
+    "'parkplaza.com'. For 'Hilton Frankfurt' prefer a German/Frankfurt-specific site. "
+    "The right domain is where you'd find local contact info, Impressum, and actual local staff — "
+    "not the global booking engine. "
+    "Return ONLY the bare domain (e.g. 'parkplazagermany.com'). No explanation. If unsure return null."
 )
 
 _SERP_DOMAIN_RE = re.compile(r"^[a-z0-9][a-z0-9\-\.]+\.[a-z]{2,}$")

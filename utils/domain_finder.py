@@ -63,58 +63,85 @@ def _clean_slug(company_name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", _normalize_umlauts(cleaned).lower())
 
 
+_GERMAN_LOCATION_WORDS = {
+    "deutschland", "germany", "berlin", "hamburg", "münchen", "munich",
+    "frankfurt", "köln", "cologne", "düsseldorf", "stuttgart", "hannover",
+    "nürnberg", "nuremberg", "leipzig", "bremen", "dresden", "dortmund",
+    "austria", "österreich", "wien", "vienna", "graz", "salzburg",
+    "switzerland", "schweiz", "zürich", "zurich", "genf", "basel", "bern",
+}
+
+
 def find_company_domain(company_name: str, location: str = "") -> str | None:
     """Find the primary website domain of a company via search + direct resolution."""
-    # Try search engines first
-    candidates_from_search: list[str] = []
-    for query in [
+    location_lower = location.lower()
+    is_dach_search = any(w in location_lower for w in _GERMAN_LOCATION_WORDS)
+
+    # Run ALL queries and collect all found domains — don't return on first hit.
+    # For hotel chains etc., the first result ("parkplaza.com") is often the global
+    # brand site; the second query with "Impressum" returns the local site ("parkplazagermany.com").
+    queries = [
         f'"{company_name}" official website',
-        f'"{company_name}" {location} Kontakt' if location else f'"{company_name}" Kontakt Impressum',
+        # Impressum search is crucial for German companies — always targets the *local* site
+        f'"{company_name}" {location} Impressum Kontakt' if location else f'"{company_name}" Impressum Kontakt',
         f'"{company_name}" {location} website' if location else f'"{company_name}" website',
-    ]:
+    ]
+
+    candidates: list[str] = []
+    for query in queries:
         domain = _search_google_for_domain(query, company_name, location)
-        if domain:
-            if domain not in candidates_from_search:
-                candidates_from_search.append(domain)
-            # Only return immediately if very confident (single unambiguous result)
-            return domain
+        if domain and domain not in candidates:
+            candidates.append(domain)
 
     # Fallback: try direct TLD guesses
-    slug_candidates = _build_slug_candidates(company_name)
-    country_tlds = _country_tlds(location)
-    base_tlds = [".com", ".de", ".at", ".ch", ".net", ".org", ".co.uk", ".io", ".eu"]
-    all_tlds = list(dict.fromkeys(country_tlds + base_tlds))
+    if not candidates:
+        # Fallback: direct TLD guesses from slug
+        slug_candidates = _build_slug_candidates(company_name)
+        country_tlds = _country_tlds(location)
+        base_tlds = [".com", ".de", ".at", ".ch", ".net", ".org", ".co.uk", ".io", ".eu"]
+        all_tlds = list(dict.fromkeys(country_tlds + base_tlds))
+        seen: set[str] = set()
+        for slug in slug_candidates:
+            for tld in all_tlds:
+                key = slug + tld
+                if key not in seen and _domain_resolves(key):
+                    candidates.append(key)
+                    break
+                seen.add(key)
+            if candidates:
+                break
 
-    resolved: list[str] = []
-    seen = set()
-    for slug in slug_candidates:
-        for tld in all_tlds:
-            key = slug + tld
-            if key in seen:
-                continue
-            seen.add(key)
-            if _domain_resolves(key):
-                resolved.append(key)
-                if len(resolved) == 1:
-                    break  # first hit is usually correct for exact slug matches
-        if resolved:
-            break
-
-    if not resolved:
+    if not candidates:
         return None
 
-    # If multiple slugs resolve, ask Claude to pick the best one
-    if len(resolved) > 1:
-        try:
-            from utils.claude_extractor import pick_best_domain, claude_available
-            if claude_available():
-                choice = pick_best_domain(company_name, location, resolved)
-                if choice:
-                    return choice
-        except Exception:
-            pass
+    if len(candidates) == 1:
+        return candidates[0]
 
-    return resolved[0]
+    # Multiple candidates: pick the most local/relevant one.
+    # For DACH companies, prefer German/local domains over global brand sites.
+    if is_dach_search:
+        # 1. Prefer .de / .at / .ch
+        for tld in (".de", ".at", ".ch"):
+            local = [d for d in candidates if d.endswith(tld)]
+            if local:
+                return local[0]
+        # 2. Prefer domains whose name contains a DACH location word or "germany"/"austria"/"schweiz"
+        boost_words = ["germany", "deutschland", "austria", "oesterreich", "schweiz", "swiss"]
+        local = [d for d in candidates if any(w in d for w in boost_words)]
+        if local:
+            return local[0]
+
+    # Let Claude decide among the remaining candidates
+    try:
+        from utils.claude_extractor import pick_best_domain, claude_available
+        if claude_available():
+            choice = pick_best_domain(company_name, location, candidates)
+            if choice:
+                return choice
+    except Exception:
+        pass
+
+    return candidates[0]
 
 
 def _build_slug_candidates(company_name: str) -> list[str]:

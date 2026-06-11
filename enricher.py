@@ -96,7 +96,7 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
     if domain:
         people_tasks["website"] = lambda: scrape_company_website(domain)
         people_tasks["email_hunter"] = lambda: hunt_domain(domain, company_name)
-        people_tasks["company_email"] = lambda: get_company_generic_email(domain)
+        people_tasks["company_email"] = lambda: get_company_generic_email(domain, company_name, location)
 
     executor = ThreadPoolExecutor(max_workers=12)
     futures = {executor.submit(fn): name for name, fn in people_tasks.items()}

@@ -467,11 +467,11 @@ def _extract_person_from_card(card) -> dict | None:
 _GENERIC_EMAIL_PRIORITY = ["kontakt", "info", "contact", "office", "mail", "hallo", "hello"]
 
 
-def get_company_generic_email(domain: str) -> str | None:
+def get_company_generic_email(domain: str, company_name: str = "", location: str = "") -> str | None:
     """
-    Quick scrape of the contact/impressum page for a generic company email.
-    Returns the best match (kontakt@, info@, etc.) or None.
-    Only does 2-3 fast fetches — intended as a lightweight parallel task.
+    Find a generic company contact email.
+    Strategy 1: scrape the contact/impressum page directly.
+    Strategy 2 (fallback): SERP search for the company's email address.
     """
     base_url = f"https://{domain}"
     session = get_session()
@@ -486,7 +486,24 @@ def get_company_generic_email(domain: str) -> str | None:
             if host == domain or host.endswith("." + domain):
                 found_emails.append(e)
         if found_emails:
-            break  # stop after first page that has any company email
+            break
+
+    if not found_emails and company_name:
+        # Fallback: SERP search — snippets often contain "kontakt@..." addresses directly
+        from utils.http_client import multi_engine_search
+        from bs4 import BeautifulSoup as _BS
+        q = f'"{company_name}" {location} email "@" Kontakt' if location else f'"{company_name}" email "@" Kontakt'
+        html = multi_engine_search(q, session)
+        if html:
+            text = _BS(html, "html.parser").get_text(separator=" ")
+            company_kw = {w.lower() for w in company_name.split() if len(w) >= 4}
+            throwaway = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "gmx.de", "web.de"}
+            for e in extract_email_from_text(text):
+                host = e.split("@")[-1].lower()
+                if host in throwaway:
+                    continue
+                if host == domain or host.endswith("." + domain) or any(kw in host for kw in company_kw):
+                    found_emails.append(e)
 
     if not found_emails:
         return None
