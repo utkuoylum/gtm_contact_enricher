@@ -167,14 +167,27 @@ def scrape_company_website(domain: str, company_name: str = "") -> list[dict]:
                 _claude_called = True
         discovered_people.extend(people)
 
-    # Deduplicate people by name
+    # Deduplicate and filter obvious false positives:
+    # - card contacts without a title are usually navigation items or multi-name groups
+    # - names with 3+ words where none look like a last name
+    _NAV_WORDS = {"zum", "inhalt", "weiter", "mehr", "home", "back", "next", "skip",
+                  "mach", "deine", "inbox", "tasty", "newsletter", "subscribe"}
     seen_names = set()
     unique_people = []
     for p in discovered_people:
-        key = p.get("full_name", "").lower().strip()
-        if key and key not in seen_names:
-            seen_names.add(key)
-            unique_people.append(p)
+        name = (p.get("full_name") or "").strip()
+        key = name.lower()
+        if not name or key in seen_names:
+            continue
+        # Drop card contacts that have no title — almost always navigational/structural text
+        if p.get("source") == "website_card" and not p.get("title"):
+            continue
+        # Drop names that contain obvious navigation words
+        name_words = {w.lower() for w in name.split()}
+        if name_words & _NAV_WORDS:
+            continue
+        seen_names.add(key)
+        unique_people.append(p)
 
     # Attach emails directly found on website to people if matching
     for person in unique_people:
@@ -374,6 +387,20 @@ def _parse_team_page(html: str, domain: str) -> list[dict]:
         # HTML / meta keywords that leak into get_text()
         "description", "title", "keywords", "key",
     }
+    # Job title keywords — at least one must appear in the extracted title.
+    # This blocks product names like "Mischung zum Selbstmixen" while keeping
+    # "Geschäftsführer", "Front Office Manager", "Senior Designer", etc.
+    _JOB_TITLE_WORDS = {
+        "manager", "director", "ceo", "cto", "cfo", "coo", "vp", "president",
+        "head", "lead", "senior", "junior", "associate", "specialist", "officer",
+        "coordinator", "engineer", "developer", "designer", "analyst", "consultant",
+        "leiter", "leiterin", "geschäftsführer", "geschäftsführerin",
+        "inhaber", "inhaberin", "prokurist", "prokuristin", "vorstand",
+        "referent", "referentin", "gründer", "gründerin", "eigentümer",
+        "gesellschafter", "teamlead", "teamleiter", "chef", "chefin",
+        "founder", "partner", "principal", "supervisor", "foreman",
+    }
+
     text = soup.get_text(separator="\n")
     for pattern in NAME_TITLE_PATTERNS:
         for match in re.finditer(pattern, text):
@@ -385,11 +412,12 @@ def _parse_team_page(html: str, domain: str) -> list[dict]:
             # Reject if any part is a known non-name word
             if any(p.lower() in _WEBSITE_NON_NAMES for p in parts):
                 continue
-            # Title should not be extremely long (heading text, not a job title)
-            if len(title) > 60:
+            # Title must contain at least one job-related keyword
+            title_lower = title.lower()
+            if not any(kw in title_lower for kw in _JOB_TITLE_WORDS):
                 continue
-            # Title should not itself be a meta keyword
-            if title.lower() in _WEBSITE_NON_NAMES:
+            # Title should not be extremely long (heading text, not a job title)
+            if len(title) > 80:
                 continue
             people.append({"full_name": name, "title": title, "email": None, "phone": None, "source": "website_text"})
 

@@ -210,46 +210,120 @@ def _company_slug_from_name(company_name: str) -> str:
 
 
 def _search_xing_persons(company_name: str, location: str, session) -> list[dict]:
-    """Search XING for person profiles via SERP."""
+    """
+    Search XING for person profiles.
+    Strategy 1: Xing company search page (direct, no SERP needed).
+    Strategy 2: Google/Bing SERP with xing.com site: filter as fallback.
+    """
     contacts = []
-    seen = set()
+    seen: set[str] = set()
 
-    # German HR and executive roles to search for
-    role_queries = [
-        f'site:xing.com/profile "{company_name}" "Geschäftsführer" OR "Gesellschafter" OR "Inhaber"',
-        f'site:xing.com/profile "{company_name}" "Personalleiter" OR "HR" OR "Recruiter"',
-        f'site:xing.com "{company_name}" Geschäftsführer OR Prokurist',
+    # Strategy 1: Xing's own company search — lists employees on company profile pages
+    contacts.extend(_xing_company_employee_search(company_name, location, session, seen))
+    if len(contacts) >= 5:
+        return contacts
+
+    # Strategy 2: SERP with Claude extraction (more reliable than site: filter)
+    try:
+        from utils.claude_extractor import extract_contacts_from_serp, claude_available
+        _claude_ok = claude_available()
+    except Exception:
+        _claude_ok = False
+
+    queries = [
+        f'xing.com "{company_name}" Geschäftsführer OR Inhaber OR CEO',
+        f'xing.com "{company_name}" {location} Personalleiter OR HR',
     ]
-
-    for query in role_queries:
+    for query in queries:
         html = multi_engine_search(query, session)
         if not html:
             continue
-        polite_sleep(1.0)
-
+        polite_sleep(0.8)
         soup = BeautifulSoup(html, "html.parser")
+
+        # Extract Xing profile URLs from results
         for a in soup.find_all("a", href=True):
             href = a["href"]
-            m = re.search(r"xing\.com/profile/([A-Za-z0-9_\-]+)", href)
-            if not m:
-                # Unwrap Google redirect
-                gm = re.search(r"/url\?q=(https?://[^&]+)", href)
-                if gm:
-                    m = re.search(r"xing\.com/profile/([A-Za-z0-9_\-]+)", gm.group(1))
+            gm = re.search(r"/url\?q=(https?://[^&]+)", href)
+            url = gm.group(1) if gm else href
+            m = re.search(r"xing\.com/profile/([A-Za-z0-9_\-]+)", url)
             if not m:
                 continue
-
             slug = m.group(1)
             if slug in seen:
                 continue
             seen.add(slug)
-
             person = _parse_xing_profile_slug(slug, a.find_parent(["div", "li", "article"]))
-            if person and len(person["full_name"].split()) >= 2:
+            if person and len((person.get("full_name") or "").split()) >= 2:
                 contacts.append(person)
+
+        # Also try Claude on the SERP text
+        if _claude_ok and len(contacts) < 3:
+            try:
+                serp_text = soup.get_text(separator=" ")
+                claude_contacts = extract_contacts_from_serp(serp_text, company_name, location)
+                for c in claude_contacts:
+                    key = (c.get("full_name") or "").lower()
+                    if key and key not in seen:
+                        seen.add(key)
+                        contacts.append({**c, "source": "xing_serp"})
+            except Exception:
+                pass
 
         if len(contacts) >= 10:
             break
+
+    return contacts
+
+
+def _xing_company_employee_search(company_name: str, location: str, session, seen: set) -> list[dict]:
+    """
+    Search Xing company pages for employees.
+    Xing's /companies/search returns public company pages with employee lists.
+    """
+    contacts = []
+    query = quote_plus(f"{company_name} {location}".strip())
+    search_url = f"https://www.xing.com/search?q={query}&section=companies"
+    html = fetch_url(search_url, session)
+    if not html:
+        return []
+
+    polite_sleep(0.5)
+    soup = BeautifulSoup(html, "html.parser")
+
+    # Find company page links
+    company_page_url = None
+    company_kw = company_name.lower().split()[0]
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if "/pages/" in href and company_kw in (a.get_text() or href).lower():
+            company_page_url = href if href.startswith("http") else f"https://www.xing.com{href}"
+            break
+
+    if not company_page_url:
+        return []
+
+    polite_sleep(0.5)
+    page_html = fetch_url(company_page_url, session)
+    if not page_html:
+        return []
+
+    page_soup = BeautifulSoup(page_html, "html.parser")
+    # Employee cards often in sections with data-testid or class containing 'employee'/'member'
+    for card in page_soup.select("[class*='employee'], [class*='member'], [data-testid*='employee']"):
+        text = card.get_text(separator=" ", strip=True)
+        m = re.search(r"\b([A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+(?:\s[A-ZÜÖÄ][a-züöäß\-]+)?)\b", text)
+        if m:
+            name = m.group(1)
+            key = name.lower()
+            if key not in seen:
+                seen.add(key)
+                contacts.append({
+                    "full_name": name,
+                    "title": _extract_role_from_text(text),
+                    "email": None, "phone": None,
+                    "source": "xing_company_page",
+                })
 
     return contacts
 

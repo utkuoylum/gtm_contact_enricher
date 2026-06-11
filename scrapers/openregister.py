@@ -103,18 +103,26 @@ def find_german_register_officers(company_name: str, location: str = "") -> list
 def _serp_search_german_officers(company_name: str, location: str) -> list[dict]:
     """
     Mine SERP snippets for German officer names.
-    "Wenatex Geschäftsführer" → snippet usually says "Max Müller, Geschäftsführer"
+    Uses Claude for extraction — far more reliable than regex for varied snippet formats.
     """
     contacts = []
     session = get_session()
 
     queries = [
         f'"{company_name}" Geschäftsführer',
-        f'"{company_name}" Inhaber OR Prokurist OR Vorstand',
-        f'{company_name} site:northdata.com OR site:handelsregister.de OR site:unternehmensregister.de',
+        f'"{company_name}" Inhaber OR Gründer OR Prokurist OR Vorstand',
+        f'"{company_name}" {location} Impressum Geschäftsführer' if location else f'"{company_name}" Impressum Geschäftsführer',
     ]
 
-    for query in queries[:2]:  # First 2 are most reliable
+    try:
+        from utils.claude_extractor import extract_contacts_from_serp, claude_available
+        _claude_ok = claude_available()
+    except Exception:
+        _claude_ok = False
+
+    seen: set[str] = set()
+
+    for query in queries:
         html = multi_engine_search(query, session)
         if not html:
             polite_sleep(0.5)
@@ -122,44 +130,40 @@ def _serp_search_german_officers(company_name: str, location: str) -> list[dict]
 
         polite_sleep(0.5)
         soup = BeautifulSoup(html, "html.parser")
+        serp_text = soup.get_text(separator=" ")
 
-        # Collect all text snippets from search results
-        snippets: list[str] = []
-        for el in soup.find_all(["div", "p", "span", "li"]):
-            text = el.get_text(separator=" ", strip=True)
-            # Only process snippets that mention the company
-            company_keyword = company_name.split()[0].lower()
-            if company_keyword in text.lower() and 30 < len(text) < 500:
-                snippets.append(text)
+        # Claude-first extraction
+        if _claude_ok:
+            try:
+                claude_contacts = extract_contacts_from_serp(serp_text, company_name, location)
+                for c in claude_contacts:
+                    key = (c.get("full_name") or "").lower()
+                    if key and key not in seen:
+                        seen.add(key)
+                        contacts.append({**c, "source": "german_serp"})
+            except Exception:
+                pass
 
-        # Also process all text for cross-snippet patterns
-        full_text = soup.get_text(separator="\n")
-        snippets.append(full_text)
-
-        role_found: dict[str, str] = {}
-
-        for snippet in snippets:
+        # Regex fallback for when Claude is unavailable
+        if not contacts:
+            full_text = soup.get_text(separator="\n")
             for pattern in _SNIPPET_PATTERNS:
-                for match in re.finditer(pattern, snippet, re.IGNORECASE):
+                for match in re.finditer(pattern, full_text, re.IGNORECASE):
                     name = match.group(1).strip() if match.lastindex >= 1 else ""
-                    if not name:
-                        continue
-                    if _is_valid_german_name(name):
-                        # Determine role from surrounding context
-                        role = _role_from_context(snippet, name)
+                    if name and _is_valid_german_name(name):
                         key = name.lower()
-                        if key not in role_found:
-                            role_found[key] = role or "Geschäftsführer"
+                        if key not in seen:
+                            seen.add(key)
+                            role = _role_from_context(full_text, name)
                             contacts.append({
                                 "full_name": name,
                                 "title": role or "Geschäftsführer",
-                                "email": None,
-                                "phone": None,
+                                "email": None, "phone": None,
                                 "source": "german_serp",
                             })
 
-        if contacts:
-            break  # Found names, no need for more queries
+        if len(contacts) >= 3:
+            break
 
     return contacts[:5]
 
