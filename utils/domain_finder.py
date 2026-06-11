@@ -195,12 +195,16 @@ def _search_google_for_domain(query: str, company_name: str) -> str | None:
             continue
         seen.add(domain)
 
-        # Match: any slug candidate appears in domain's first label
+        # Match: slug candidate appears in domain's first label.
+        # Use only slugs that are ≥ 5 chars to avoid "park" matching "park.de",
+        # "info" matching "infosystems.de", etc. Fall back to all slugs only if
+        # every candidate is short (single-word brand like "Adidas").
         domain_base = re.sub(r"[^a-z0-9]", "", domain.split(".")[0])
+        specific_slugs = [s for s in slug_candidates_list if len(s) >= 5]
+        match_slugs = specific_slugs if specific_slugs else slug_candidates_list
         matched = False
-        for s in slug_candidates_list:
-            if s and (s in domain_base or domain_base in s or
-                      (len(s) >= 4 and s[:4] in domain_base)):
+        for s in match_slugs:
+            if s and (s in domain_base or domain_base in s):
                 matched = True
                 break
         if matched:

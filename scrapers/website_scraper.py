@@ -68,7 +68,8 @@ def scrape_company_website(domain: str) -> list[dict]:
     _domain_hard_blocked = (html is None)
     if html:
         for e in extract_email_from_text(html):
-            emails_found.add(e)
+            if e.split("@")[-1].lower() == domain or e.split("@")[-1].lower().endswith("." + domain):
+                emails_found.add(e)
         for p in extract_phone_from_text(html):
             phones_found.add(p)
         polite_sleep(0.8)
@@ -112,7 +113,11 @@ def scrape_company_website(domain: str) -> list[dict]:
         polite_sleep(0.8)
 
         for e in extract_email_from_text(html):
-            emails_found.add(e)
+            # Only keep emails belonging to the domain being scraped — rejects
+            # third-party addresses, honeypots, and tracking pixels in the page.
+            email_host = e.split("@")[-1].lower()
+            if email_host == domain or email_host.endswith("." + domain):
+                emails_found.add(e)
         for p in extract_phone_from_text(html):
             phones_found.add(p)
 
