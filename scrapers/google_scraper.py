@@ -40,7 +40,7 @@ _ROLE_PATTERN = re.compile(
 )
 
 
-def google_contact_search(company_name: str, location: str = "", domain: str = "") -> list[dict]:
+def google_contact_search(company_name: str, location: str = "", domain: str = "", job_category: str = "") -> list[dict]:
     contacts = []
     session = get_session()
     seen: set[str] = set()
@@ -53,7 +53,7 @@ def google_contact_search(company_name: str, location: str = "", domain: str = "
         extract_contacts_from_serp = None  # type: ignore[assignment]
         _claude_ok = False
 
-    queries = _build_queries(company_name, location, domain)
+    queries = _build_queries(company_name, location, domain, job_category)
 
     for query in queries:
         html = multi_engine_search(query, session)
@@ -75,11 +75,11 @@ def google_contact_search(company_name: str, location: str = "", domain: str = "
         regex_contacts = _extract_contacts_from_serp(html, company_name, domain)
 
         # Merge: Claude first, then regex results not already seen by name
-        claude_names = {c.get("full_name", "").lower() for c in claude_contacts if c.get("full_name")}
-        combined = claude_contacts + [c for c in regex_contacts if c.get("full_name", "").lower() not in claude_names]
+        claude_names = {(c.get("full_name") or "").lower() for c in claude_contacts if c.get("full_name")}
+        combined = claude_contacts + [c for c in regex_contacts if (c.get("full_name") or "").lower() not in claude_names]
 
         for c in combined:
-            key = c.get("full_name", "").lower()
+            key = (c.get("full_name") or "").lower()
             if key and key not in seen:
                 seen.add(key)
                 contacts.append(c)
@@ -113,16 +113,38 @@ def _is_dach(location: str, domain: str) -> bool:
     return False
 
 
-def _build_queries(company_name: str, location: str, domain: str) -> list[str]:
+_HOSPITALITY_KEYWORDS = {
+    "hotel", "hotels", "hostel", "motel", "resort", "inn", "suites", "lodge",
+    "plaza", "palace", "grand", "marriott", "hilton", "hyatt", "radisson",
+    "sheraton", "westin", "ibis", "novotel", "accor", "intercontinental", "ihg",
+    "bestwestern", "mercure", "sofitel", "pullman", "renaissance",
+}
+
+
+def _is_hospitality(company_name: str, domain: str) -> bool:
+    words = {w.lower() for w in re.sub(r"[^a-z0-9 ]", "", company_name.lower()).split()}
+    return bool(words & _HOSPITALITY_KEYWORDS) or any(kw in domain.lower() for kw in {"hotel", "resort", "plaza", "inn"})
+
+
+def _build_queries(company_name: str, location: str, domain: str, job_category: str = "") -> list[str]:
     queries = []
     name_q = f'"{company_name}"'
     dach = _is_dach(location, domain)
+    hospitality = _is_hospitality(company_name, domain)
 
     # Site-specific search (most targeted)
     if domain:
         queries.append(f'site:{domain} contact OR team OR about')
 
-    if dach:
+    if hospitality:
+        # Hotels don't publish Geschäftsführer in SERP — use hotel-specific roles
+        queries.append(f'{name_q} "General Manager" OR "Hoteldirektor" OR "Hotel Manager"')
+        queries.append(f'{name_q} "Events Manager" OR "MICE" OR "Veranstaltungsleiter" OR "Sales Manager"')
+        queries.append(f'{name_q} "Director of Sales" OR "Revenue Manager" OR "Front Office Manager"')
+        queries.append(f'{name_q} email "@" Kontakt')
+        if domain:
+            queries.append(f'"@{domain}" OR "@parkplazagermany" {name_q}')
+    elif dach:
         # German-specific: most likely to find Geschäftsführer, Inhaber, etc.
         queries.append(f'{name_q} Geschäftsführer OR Inhaber OR Prokurist Kontakt')
         queries.append(f'{name_q} Personalleiter OR "HR Manager" OR Personalreferent')
@@ -145,6 +167,10 @@ def _build_queries(company_name: str, location: str, domain: str) -> list[str]:
             queries.append(f'"@{domain}" {name_q}')
         else:
             queries.append(f'{name_q} "@" email contact{loc}')
+
+    # If a specific job category was requested, add a targeted query
+    if job_category:
+        queries.append(f'{name_q} "{job_category}" contact email')
 
     return queries
 
@@ -176,9 +202,30 @@ def _extract_contacts_from_serp(html: str, company_name: str, domain: str) -> li
            not domain:
             filtered_emails.append(email)
 
+    # Generic/role email prefixes — never yield a real person name
+    _GENERIC_LOCALS = {
+        "info", "kontakt", "contact", "office", "mail", "hello", "hallo",
+        "service", "support", "sales", "booking", "reservations", "reservation",
+        "reception", "team", "hotel", "events", "veranstaltungen", "mice",
+        "marketing", "pr", "presse", "press", "jobs", "karriere", "career",
+        "hr", "bewerbung", "admin", "noreply", "no-reply", "reply", "postmaster",
+        "webmaster", "abuse", "legal", "datenschutz", "privacy", "invoice",
+        "buchhaltung", "accounting", "finanzen",
+    }
+
     # Try to pair email with a name from surrounding context
     for email in filtered_emails[:5]:
-        local = email.split("@")[0]
+        local = email.split("@")[0].lower()
+        if local in _GENERIC_LOCALS:
+            # Still record the email, but without a fake name
+            contacts.append({
+                "full_name": None,
+                "email": email,
+                "title": None,
+                "phone": phones[0] if phones else None,
+                "source": "google_serp",
+            })
+            continue
         name = _name_from_local(local)
         title = _find_title_near_email(text, email)
         contacts.append({

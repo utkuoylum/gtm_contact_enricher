@@ -78,7 +78,7 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
 
     people_tasks = {
         "linkedin":        lambda: search_linkedin_contacts(company_name, location, job_category),
-        "google":          lambda: google_contact_search(company_name, location, domain or ""),
+        "google":          lambda: google_contact_search(company_name, location, domain or "", job_category),
         "crunchbase":      lambda: scrape_crunchbase_people(company_name),
         "companies_house": lambda: find_company_officers(company_name, location),
         "news":            lambda: find_executives_in_news(company_name, location),
@@ -113,7 +113,9 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
                 elif name == "company_email":
                     company_generic_email = res
                 else:
-                    raw_contacts.extend(res or [])
+                    found = res or []
+                    logger.info(f"Source '{name}': {len(found)} contacts")
+                    raw_contacts.extend(found)
                 sources_used.append(name)
             except Exception as e:
                 errors.append(f"{name}: {e}")
@@ -167,6 +169,7 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
             verified_email_map[ec.email] = ec.smtp_status
 
     # 4. Filter out non-persons (company names returned as contacts) then deduplicate
+    logger.debug(f"Raw contacts before filter: {[(c.get('full_name'), c.get('source')) for c in raw_contacts]}")
     raw_contacts = [c for c in raw_contacts if _is_valid_person(c.get("full_name", ""), company_name)]
     deduped = _deduplicate(raw_contacts)
     logger.info(f"After dedup: {len(deduped)} people")
