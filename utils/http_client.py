@@ -229,6 +229,11 @@ def multi_engine_search(query: str, session: requests.Session = None, num: int =
             html = cffi_get(url, timeout=conn_timeout)
             if html and len(html) > 1000 and not is_bot_blocked(html):
                 return html
+            if html is None and is_ddg:
+                # cffi also failed on DDG — mark unavailable before trying requests
+                _DDG_AVAILABLE = False
+                polite_sleep(0.2)
+                continue  # skip to next engine
             polite_sleep(0.3)
 
         # Tier 2: regular requests fallback
@@ -237,10 +242,10 @@ def multi_engine_search(query: str, session: requests.Session = None, num: int =
             resp = _session.get(url, timeout=(conn_timeout, REQUEST_TIMEOUT))
             if resp.status_code == 200 and len(resp.text) > 1000 and not is_bot_blocked(resp.text):
                 return resp.text
-        except requests.exceptions.ConnectTimeout:
+        except requests.exceptions.Timeout:
             if is_ddg:
                 _DDG_AVAILABLE = False   # DDG unreachable — skip for rest of session
-                logger.debug("DuckDuckGo connect timeout — disabling for this session")
+                logger.debug("DuckDuckGo timeout — disabling for this session")
         except requests.RequestException:
             pass
         polite_sleep(0.5)

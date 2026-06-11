@@ -407,10 +407,13 @@ def _normalize_name(name: str) -> str:
 
 _COMPANY_NAME_NOISE = re.compile(
     r"\b(GmbH|AG|KG|UG|e\.K\.|eK|SE|eG|OHG|GbR|Ltd\.?|LLC|Inc\.?|Corp\.?|"
-    r"GmbH\s*&\s*Co\.?\s*KG|Kontakt|Contact|Info|Support|Team|Service)\b",
+    r"GmbH\s*&\s*Co\.?\s*KG|Kontakt|Contact|Info|Support|Service|"
+    r"Hotel|Hotels|Gruppe|Group|Holding|Management|Solutions|Systems|Technologies)\b",
     re.IGNORECASE,
 )
-_PERSON_NAME = re.compile(r"^[A-ZÜÖÄ][a-züöäß\-]+(?: [A-ZÜÖÄ][a-züöäß\-]+)+$")
+
+# Lowercase particles that appear in legitimate personal names
+_NAME_PARTICLES = {"von", "van", "de", "der", "den", "di", "du", "del", "da", "le", "la", "zu"}
 
 
 def _is_valid_person(name: str, company_name: str) -> bool:
@@ -423,8 +426,20 @@ def _is_valid_person(name: str, company_name: str) -> bool:
     # Reject if name is identical (or near-identical) to company name
     if name.lower().strip() == company_name.lower().strip():
         return False
-    # Must look like a personal name: 2+ words, each starting with uppercase
-    parts = name.strip().split()
+    # Reject if name contains a large portion of the company name words
+    company_words = {w.lower() for w in company_name.split() if len(w) > 3}
+    name_words = {w.lower() for w in name.split() if len(w) > 3}
+    if company_words and len(name_words & company_words) >= min(2, len(company_words)):
+        return False
+    # Must look like a personal name: 2-5 words
+    parts = [p for p in name.strip().split() if p]
     if len(parts) < 2 or len(parts) > 5:
         return False
-    return all(p[0].isupper() for p in parts if p)
+    # Each word must start uppercase, EXCEPT known name particles (von, van, de, etc.)
+    for p in parts:
+        if p.lower() in _NAME_PARTICLES:
+            continue
+        if not p[0].isupper():
+            logger.debug(f"_is_valid_person rejected '{name}': part '{p}' not capitalized")
+            return False
+    return True
