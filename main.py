@@ -113,5 +113,7 @@ async def _run_and_callback(request: EnrichmentRequest):
 
 
 if __name__ == "__main__":
+    import os
     import uvicorn
-    uvicorn.run("main:app", host=HOST, port=PORT, reload=False)
+    port = int(os.environ.get("PORT", PORT))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False, timeout_keep_alive=120)
