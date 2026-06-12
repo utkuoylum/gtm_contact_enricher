@@ -25,7 +25,9 @@ from scrapers.german_directories import find_german_directory_contacts
 from scrapers.openregister import find_german_register_officers
 from scrapers.press_scraper import find_press_contacts
 from scrapers.job_portal_scraper import find_job_portal_contacts
-from scrapers.apollo_scraper import search_apollo_contacts, apollo_available
+from scrapers.apollo_scraper import (
+    search_apollo_contacts, apollo_available, enrich_organization, match_person,
+)
 from scrapers.hunter_scraper import search_hunter_contacts, hunter_available
 from email_hunter import hunt_domain, find_person_email
 from email_hunter.smtp_verifier import verify_emails_bulk
@@ -58,15 +60,43 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
     sources_used: list[str] = []
 
     # 1. Find company domain (skip if caller already knows it)
+    apollo_org: dict | None = None
     if domain:
-        domain = domain.lstrip("https://").lstrip("http://").lstrip("www.").rstrip("/")
+        domain = _normalize_domain(domain)
         logger.info(f"Domain provided: {domain}")
     else:
-        logger.info(f"Finding domain for: {company_name}")
+        # 1a. Apollo organization enrichment first — authoritative primary_domain,
+        # avoids slug-guess junk like 'Octopus Energy' → octopus.com.
+        if apollo_available():
+            try:
+                apollo_org = enrich_organization(company_name=company_name)
+                if apollo_org and apollo_org.get("primary_domain"):
+                    domain = _normalize_domain(apollo_org["primary_domain"])
+                    sources_used.append("apollo_org")
+                    logger.info(f"Domain (Apollo org): {domain}")
+            except Exception as e:
+                errors.append(f"apollo_org: {e}")
+        if not domain:
+            logger.info(f"Finding domain for: {company_name}")
+            try:
+                domain = find_company_domain(company_name, location) or ""
+            except Exception as e:
+                errors.append(f"Domain lookup: {e}")
+            # Guard against implausible guesses: domain must share a slug fragment
+            # with the company name, otherwise flag it as low-confidence.
+            if domain and not _domain_plausible(domain, company_name):
+                errors.append(f"domain_guess_low_confidence: {domain}")
+                logger.warning(f"Domain guess '{domain}' has no overlap with '{company_name}'")
+
+    # Resolve Apollo org by confirmed domain too (gives org id for scoped people search)
+    if apollo_available() and apollo_org is None:
         try:
-            domain = find_company_domain(company_name, location) or ""
+            apollo_org = enrich_organization(company_name=company_name, domain=domain)
+            if apollo_org:
+                sources_used.append("apollo_org")
         except Exception as e:
-            errors.append(f"Domain lookup: {e}")
+            errors.append(f"apollo_org: {e}")
+
     result.domain = domain or None
     logger.info(f"Domain: {domain}")
 
@@ -88,7 +118,10 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
     }
 
     if apollo_available():
-        people_tasks["apollo"] = lambda: search_apollo_contacts(company_name, location, job_category)
+        _org_id = (apollo_org or {}).get("id") or ""
+        people_tasks["apollo"] = lambda: search_apollo_contacts(
+            company_name, location, job_category, organization_id=_org_id
+        )
 
     if hunter_available():
         # Hunter.io: domain-search gives real emails of named employees.
@@ -167,6 +200,13 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
         _company_phone_detail = _phone_info_to_model(pi)
         errors.extend(phone_result.errors)
 
+    # Apollo org phone as fallback when phone hunter found nothing
+    if not _company_phone_str and apollo_org and apollo_org.get("phone"):
+        _company_phone_str = apollo_org["phone"]
+        _company_phone_detail = PhoneDetail(
+            raw=apollo_org["phone"], valid=True, source="apollo_org", confidence=70,
+        )
+
     result.company_contact_info = CompanyContactInfo(
         phone=_company_phone_str,
         phone_detail=_company_phone_detail,
@@ -226,9 +266,15 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
     if domain:
         _enrich_emails_with_hunter(deduped, domain, pattern, hunt_result, errors)
 
+    # 5b. Apollo people/match — highest-precision personal email/phone source.
+    # For top contacts still missing email or phone (found via LinkedIn/Xing/register),
+    # ask Apollo to match them by name+company/linkedin_url. 1 credit per match.
+    if apollo_available():
+        _apollo_match_missing(deduped, company_name, domain, verified_email_map, errors)
+
     # 6. Bulk-verify newly assigned emails — skip emails from trusted sources
     # Apollo/LinkedIn/Xing provide pre-validated emails; SMTP-verify is wasteful and slow.
-    _TRUSTED_SOURCES = {"apollo", "linkedin", "xing", "german_register", "northdata", "hunter"}
+    _TRUSTED_SOURCES = {"apollo", "apollo_match", "linkedin", "xing", "german_register", "northdata", "hunter"}
     for c in deduped:
         src = c.get("source", "")
         if c.get("email") and src in _TRUSTED_SOURCES:
@@ -274,11 +320,21 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
         full_name = raw.get("full_name", "Unknown")
         direct_info = direct_line_map.get(full_name)
 
-        # Individual phone: only if it's a confirmed direct line from hunt_direct_line.
+        # Individual phone: only if it's a confirmed direct line from hunt_direct_line,
+        # OR a person-level number revealed by Apollo (search or people/match).
         # Company main number is already in result.company_phone — attaching it to every
         # contact implies a direct line when it's just the switchboard.
         direct_phone_str = direct_info[0] if direct_info else None
         direct_phone_detail = _phone_info_to_model(direct_info[1]) if direct_info else None
+        if not direct_phone_str and raw.get("phone") and (
+            raw.get("apollo_matched") or raw.get("source") in ("apollo", "apollo_match")
+        ):
+            direct_phone_str = raw["phone"]
+            direct_phone_detail = PhoneDetail(
+                raw=raw["phone"], valid=True,
+                source="apollo_match" if raw.get("apollo_matched") else "apollo",
+                confidence=75,
+            )
 
         c = Contact(
             full_name=full_name,
@@ -351,6 +407,101 @@ _GERMAN_LEGAL_FORMS = re.compile(
 def _is_german_company(company_name: str) -> bool:
     """Return True if the company name contains a German legal form."""
     return bool(_GERMAN_LEGAL_FORMS.search(company_name))
+
+
+def _normalize_domain(domain: str) -> str:
+    """'https://www.example.com/' → 'example.com' (proper prefix removal, not lstrip)."""
+    d = domain.strip()
+    d = re.sub(r"^https?://", "", d, flags=re.IGNORECASE)
+    d = re.sub(r"^www\.", "", d, flags=re.IGNORECASE)
+    return d.split("/")[0].strip()
+
+
+def _domain_plausible(domain: str, company_name: str) -> bool:
+    """
+    True if the domain's first label shares a ≥4-char fragment with the company
+    name slug. Catches junk guesses ('Jäger & Lustig' → jaeger.de is fine,
+    'i solutions and more' → isolutions.ch is NOT unless fragment matches).
+    """
+    base = re.sub(r"[^a-z0-9]", "", domain.split(".")[0].lower())
+    slug = re.sub(r"[^a-z0-9]", "", _GERMAN_LEGAL_FORMS.sub("", company_name).lower()
+                  .replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss"))
+    if not base or not slug:
+        return False
+    if base in slug or slug in base:
+        return True
+    # Longest common substring ≥ 4 chars
+    for length in range(min(len(base), len(slug)), 3, -1):
+        for start in range(len(base) - length + 1):
+            if base[start:start + length] in slug:
+                return True
+    return False
+
+
+def _apollo_match_missing(
+    contacts: list[dict],
+    company_name: str,
+    domain: str,
+    verified_email_map: dict[str, str],
+    errors: list[str],
+    top_n: int | None = None,
+):
+    """
+    Fill missing email/phone on the best contacts via Apollo people/match.
+    Only matches contacts that came from non-Apollo sources (Apollo-sourced ones
+    are already revealed) and that are identifiable (name + company, or linkedin_url).
+    """
+    from config import APOLLO_MATCH_TOP_N
+    limit = top_n if top_n is not None else APOLLO_MATCH_TOP_N
+    if limit <= 0:
+        return
+
+    candidates = [
+        c for c in contacts
+        if (not c.get("email") or not c.get("phone"))
+        and c.get("source") not in ("apollo", "apollo_match")
+        and len((c.get("full_name") or "").split()) >= 2
+    ][:limit]
+    if not candidates:
+        return
+
+    def _match_one(c: dict):
+        return c, match_person(
+            full_name=c.get("full_name", ""),
+            company_name=company_name,
+            domain=domain or "",
+            linkedin_url=c.get("linkedin_url") or "",
+        )
+
+    matched_count = 0
+    with ThreadPoolExecutor(max_workers=min(4, len(candidates))) as ex:
+        futures = [ex.submit(_match_one, c) for c in candidates]
+        for fut in as_completed(futures, timeout=45):
+            try:
+                c, m = fut.result()
+            except Exception as e:
+                errors.append(f"apollo_match: {e}")
+                continue
+            if not m:
+                continue
+            # Sanity: matched name must resemble the requested name
+            req_last = c.get("full_name", "").split()[-1].lower()
+            got_last = (m.get("full_name") or "").split()[-1].lower() if m.get("full_name") else ""
+            if got_last and req_last and got_last != req_last:
+                continue
+            if m.get("email") and not c.get("email"):
+                c["email"] = m["email"]
+                if m.get("email_status") in ("verified", "extrapolated", "likely to engage"):
+                    verified_email_map[m["email"]] = "valid"
+            if m.get("phone") and not c.get("phone"):
+                c["phone"] = m["phone"]
+            if m.get("linkedin_url") and not c.get("linkedin_url"):
+                c["linkedin_url"] = m["linkedin_url"]
+            if m.get("title") and not c.get("title"):
+                c["title"] = m["title"]
+            c["apollo_matched"] = True
+            matched_count += 1
+    logger.info(f"Apollo people/match: enriched {matched_count}/{len(candidates)} contacts")
 
 
 def _infer_region(domain: str, location: str) -> str:

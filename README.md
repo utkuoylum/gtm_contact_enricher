@@ -78,6 +78,33 @@ curl -X POST http://localhost:8000/enrich \
 }
 ```
 
+### Tek Kişi Zenginleştirme — `/match_person` (Apollo people/match)
+
+Başka kaynaktan (LinkedIn, sheet, CRM) zaten bildiğin bir kişinin mail + telefonunu bulur.
+Kimlik: `isim + company_name/domain`, `linkedin_url` veya `email` (reverse).
+Her başarılı eşleşme 1 Apollo kredisi harcar.
+
+```bash
+curl -X POST http://localhost:8000/match_person \
+  -H "Content-Type: application/json" \
+  -d '{
+    "full_name": "Jennifer Kandetzki",
+    "company_name": "cip marketing GmbH",
+    "domain": "cip-marketing.com"
+  }'
+# veya LinkedIn URL ile:
+curl -X POST http://localhost:8000/match_person \
+  -H "Content-Type: application/json" \
+  -d '{"linkedin_url": "https://linkedin.com/in/jennifer-kandetzki"}'
+```
+
+Yanıt: `{"found": true, "email": "...", "email_status": "verified", "phone": "+49...", ...}`
+
+`/enrich` akışı da otomatik olarak şunları yapar (APOLLO_API_KEY varsa):
+1. **Organization enrich** → doğru domain + şirket telefonu (yanlış domain tahminlerini önler)
+2. **Org-scoped people search** → kişi araması organization_id ile sınırlanır
+3. **people/match doldurma** → maili/telefonu eksik en iyi N kontak otomatik zenginleştirilir (`APOLLO_MATCH_TOP_N`, varsayılan 5)
+
 ## Derecelendirme Sistemi (1-5)
 
 | Rating | Açıklama | Örnek Unvanlar |

@@ -16,6 +16,14 @@ CLAUDE_FAST_MODEL = os.getenv("CLAUDE_FAST_MODEL", "claude-haiku-4-5-20251001")
 # Hunter.io API key (free: 25 searches/month, paid: $49/mo for 500)
 HUNTER_API_KEY = os.getenv("HUNTER_API_KEY", "")
 
+# Apollo.io API key — people search + people/match (personal email & phone reveal)
+# Free plan: unlimited email credits (fair use), paid plans add mobile numbers.
+# Get key: https://app.apollo.io/#/settings/integrations/api
+APOLLO_API_KEY = os.getenv("APOLLO_API_KEY", "")
+# How many top contacts (missing email/phone) to enrich via Apollo people/match
+# per /enrich request. Each match costs 1 Apollo credit. 0 = disable.
+APOLLO_MATCH_TOP_N = int(os.getenv("APOLLO_MATCH_TOP_N") or "5")
+
 # Optional: ScraperAPI key to bypass Google/LinkedIn blocks ($49/mo for 100k requests)
 SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "")
 

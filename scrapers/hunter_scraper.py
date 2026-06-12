@@ -43,7 +43,7 @@ def search_hunter_contacts(
 
     params: dict = {
         "api_key": HUNTER_API_KEY,
-        "limit": min(max_results, 100),
+        "limit": min(max_results, 10),  # free plan cap is 10
         "offset": 0,
     }
 

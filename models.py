@@ -64,6 +64,30 @@ class EnrichmentRequest(BaseModel):
     find_direct_lines: bool = False
 
 
+class PersonMatchRequest(BaseModel):
+    """Enrich a single, already-identified person with email + phone (Apollo people/match)."""
+    full_name: str = ""
+    first_name: str = ""
+    last_name: str = ""
+    company_name: str = ""
+    domain: str = ""
+    linkedin_url: str = ""
+    email: str = ""                      # known email → reverse-enrich the rest
+    reveal_personal_emails: bool = True
+
+
+class PersonMatchResult(BaseModel):
+    found: bool = False
+    full_name: Optional[str] = None
+    title: Optional[str] = None
+    company: Optional[str] = None
+    email: Optional[str] = None
+    email_status: Optional[str] = None   # verified | extrapolated | unavailable
+    phone: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    source: str = "apollo_match"
+
+
 class EnrichmentResult(BaseModel):
     company_name: str
     domain: Optional[str] = None
