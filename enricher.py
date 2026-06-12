@@ -26,6 +26,7 @@ from scrapers.openregister import find_german_register_officers
 from scrapers.press_scraper import find_press_contacts
 from scrapers.job_portal_scraper import find_job_portal_contacts
 from scrapers.apollo_scraper import search_apollo_contacts, apollo_available
+from scrapers.hunter_scraper import search_hunter_contacts, hunter_available
 from email_hunter import hunt_domain, find_person_email
 from email_hunter.smtp_verifier import verify_emails_bulk
 from phone_hunter import hunt_company_phone, hunt_direct_line
@@ -88,6 +89,14 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
 
     if apollo_available():
         people_tasks["apollo"] = lambda: search_apollo_contacts(company_name, location, job_category)
+
+    if hunter_available():
+        # Hunter.io: domain-search gives real emails of named employees.
+        # Run with domain if known, else fall back to company name lookup.
+        _h_domain = domain  # captured at task-creation time
+        people_tasks["hunter"] = lambda: search_hunter_contacts(
+            company_name, domain=_h_domain, location=location, job_category=job_category
+        )
 
     # DACH-specific sources (highest quality for German companies)
     if is_dach:
@@ -219,7 +228,7 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
 
     # 6. Bulk-verify newly assigned emails — skip emails from trusted sources
     # Apollo/LinkedIn/Xing provide pre-validated emails; SMTP-verify is wasteful and slow.
-    _TRUSTED_SOURCES = {"apollo", "linkedin", "xing", "german_register", "northdata"}
+    _TRUSTED_SOURCES = {"apollo", "linkedin", "xing", "german_register", "northdata", "hunter"}
     for c in deduped:
         src = c.get("source", "")
         if c.get("email") and src in _TRUSTED_SOURCES:

@@ -64,6 +64,9 @@ def search_linkedin_contacts(company_name: str, location: str = "", job_category
     seen_profiles: set[str] = set()
     session = get_session()
 
+    # Build location keywords for filtering out wrong-country results
+    _loc_keywords = _location_keywords(location)
+
     queries = _build_queries(company_name, location, job_category)
 
     for query in queries:
@@ -71,6 +74,13 @@ def search_linkedin_contacts(company_name: str, location: str = "", job_category
         polite_sleep(1.5)
         for r in results:
             url = r.get("url", "")
+            snippet = r.get("snippet", "")
+
+            # If we have location info, skip results that mention a different country/city
+            # (avoids matching "Excel Building Management Australia" for Berlin company)
+            if _loc_keywords and not _snippet_matches_location(snippet, _loc_keywords, company_name):
+                continue
+
             if url and url not in seen_profiles:
                 seen_profiles.add(url)
                 person = _parse_profile_result(r, company_name)
@@ -79,7 +89,62 @@ def search_linkedin_contacts(company_name: str, location: str = "", job_category
         if len(contacts) >= 15:
             break
 
+    # If still empty, try Claude SERP extraction on a broad query
+    if not contacts:
+        try:
+            from utils.claude_extractor import extract_contacts_from_serp, claude_available
+            if claude_available():
+                broad_q = f'"{company_name}" {location} LinkedIn Mitarbeiter OR Geschäftsführer OR Manager'
+                html = multi_engine_search(broad_q, session)
+                if html:
+                    from bs4 import BeautifulSoup as _BS
+                    text = _BS(html, "html.parser").get_text(separator=" ")
+                    claude_contacts = extract_contacts_from_serp(text, company_name, location)
+                    for c in claude_contacts:
+                        contacts.append({**c, "source": "linkedin_claude"})
+        except Exception:
+            pass
+
     return contacts[:15]
+
+
+def _location_keywords(location: str) -> set[str]:
+    """Extract meaningful location keywords for snippet filtering."""
+    if not location:
+        return set()
+    # Map known DACH cities/countries to their keywords
+    loc_lower = location.lower()
+    keywords: set[str] = set()
+    for word in re.split(r"[\s,]+", loc_lower):
+        if len(word) > 3:
+            keywords.add(word)
+    return keywords
+
+
+def _snippet_matches_location(snippet: str, loc_keywords: set[str], company_name: str) -> bool:
+    """
+    Return True if the snippet is plausibly for the right location.
+    Strategy: if snippet contains a clearly different geography (AU, Australia, Sydney etc.)
+    and none of our target keywords, reject it.
+    """
+    snippet_lower = snippet.lower()
+
+    # If any of our location keywords appear → accept
+    if any(kw in snippet_lower for kw in loc_keywords):
+        return True
+
+    # List of foreign geography markers that signal wrong country
+    _foreign_markers = {
+        "australia", "sydney", "melbourne", "brisbane", "perth", "adelaide",
+        "new zealand", "auckland", "united states", "united kingdom", "london",
+        "new york", "los angeles", "chicago", "toronto", "canada",
+        "singapore", "hong kong", "dubai", "india", "mumbai",
+    }
+    if any(marker in snippet_lower for marker in _foreign_markers):
+        return False
+
+    # No clear location signal — accept (be permissive)
+    return True
 
 
 def _build_queries(company_name: str, location: str, job_category: str) -> list[str]:
