@@ -24,12 +24,12 @@ SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "")
 JINA_API_KEY = os.getenv("JINA_API_KEY", "")
 
 # Request settings
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "15"))
-MAX_RETRIES = int(os.getenv("MAX_RETRIES", "2"))
-DELAY_BETWEEN_REQUESTS = float(os.getenv("DELAY_BETWEEN_REQUESTS", "1.5"))
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT") or "15")
+MAX_RETRIES = int(os.getenv("MAX_RETRIES") or "2")
+DELAY_BETWEEN_REQUESTS = float(os.getenv("DELAY_BETWEEN_REQUESTS") or "1.5")
 
 # SMTP email verification
-SMTP_TIMEOUT = int(os.getenv("SMTP_TIMEOUT", "10"))
+SMTP_TIMEOUT = int(os.getenv("SMTP_TIMEOUT") or "10")
 SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "verify@enrichment.local")
 
 # Server
