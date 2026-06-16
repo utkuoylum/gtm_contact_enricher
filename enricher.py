@@ -505,12 +505,21 @@ def _enrich_emails_with_hunter(
     1. Check if hunt_result already has a verified email for matching name
     2. Use find_person_email() (pattern + SMTP) as fallback
     """
-    # Build a name→email map from hunt_result contacts
-    hunt_email_by_local: dict[str, str] = {}
+    # Build name→email maps from hunt_result:
+    # - verified: SMTP-confirmed (valid/catch_all) — highest confidence
+    # - discovered: found on the web but SMTP unknown — medium confidence
+    #   (all hunt_result contacts are web-discovered, not generated — trust them)
+    hunt_email_verified: dict[str, str] = {}
+    hunt_email_discovered: dict[str, str] = {}
     if hunt_result:
         for ec in hunt_result.contacts:
-            if ec.smtp_status in ("valid", "catch_all"):
-                hunt_email_by_local[ec.local_part.lower()] = ec.email
+            bucket = (
+                hunt_email_verified if ec.smtp_status in ("valid", "catch_all")
+                else hunt_email_discovered if ec.smtp_status not in ("invalid",)
+                else None
+            )
+            if bucket is not None:
+                bucket[ec.local_part.lower()] = ec.email
 
     for contact in contacts:
         if contact.get("email"):
@@ -521,25 +530,36 @@ def _enrich_emails_with_hunter(
             continue
         first, last = parts[0], parts[-1]
 
-        # Check hunt_result for a matching name
         from email_hunter.pattern_detector import normalize
         fi = normalize(first)
         la = normalize(last)
-        for local, email in hunt_email_by_local.items():
+
+        # 1st priority: SMTP-verified match
+        for local, email in hunt_email_verified.items():
             if fi in local and la in local:
                 contact["email"] = email
                 break
+
         if contact.get("email"):
             continue
 
-        # Use our email hunter's per-person finder — ONLY when we have a confirmed
-        # email pattern. Without one, find_person_email crawls the entire site to
-        # discover the pattern, taking 2+ minutes per contact (× 15 contacts = hang).
+        # 2nd priority: web-discovered but SMTP unknown (e.g. Gemini-found emails,
+        # common when server blocks probes — not a sign the email is wrong)
+        for local, email in hunt_email_discovered.items():
+            if fi in local and la in local:
+                contact["email"] = email
+                break
+
+        if contact.get("email"):
+            continue
+
+        # 3rd priority: pattern-generate + SMTP probe (confidence >= 20 is enough
+        # when server is known to return unknown for all addresses)
         if not pattern:
             continue
         try:
             found = find_person_email(first, last, domain, pattern=pattern, max_verify=5)
-            if found and found.get("email") and found.get("confidence", 0) >= 30:
+            if found and found.get("email") and found.get("confidence", 0) >= 20:
                 contact["email"] = found["email"]
         except Exception as e:
             errors.append(f"find_person_email({full_name}): {e}")
