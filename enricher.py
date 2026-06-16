@@ -637,6 +637,11 @@ _NOT_A_NAME_WORD = frozenset({
     "holding", "venture", "capital", "fund", "group", "management",
     "consulting", "technology", "technologies", "international", "global",
     "enterprise", "limited", "gmbh", "asia", "europe", "pacific",
+    # News headline / press release fragments that leak into scraped names
+    "strategic", "signs", "veteran", "agreement", "announces", "launches",
+    "expands", "acquires", "appoints", "names", "hires", "joins", "leaves",
+    # Standalone prepositions/conjunctions that never appear as a name word
+    "as", "and", "or", "with", "for", "to", "by", "at", "in", "on", "of",
 })
 
 
