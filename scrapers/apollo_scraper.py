@@ -35,7 +35,10 @@ def _headers() -> dict:
 
 
 def apollo_available() -> bool:
-    return bool(APOLLO_API_KEY)
+    # Apollo API calls are intentionally disabled.
+    # Gemini initial search now handles company discovery.
+    # To re-enable: remove the early return below and restore APOLLO_API_KEY usage.
+    return False
 
 
 # ─── Organization enrichment ──────────────────────────────────────────────────

@@ -59,7 +59,12 @@ _SNIPPET_TITLE_PATTERNS = [
 ]
 
 
-def search_linkedin_contacts(company_name: str, location: str = "", job_category: str = "") -> list[dict]:
+def search_linkedin_contacts(
+    company_name: str,
+    location: str = "",
+    job_category: str = "",
+    staffing_titles: list[str] | None = None,
+) -> list[dict]:
     contacts: list[dict] = []
     seen_profiles: set[str] = set()
     session = get_session()
@@ -67,7 +72,7 @@ def search_linkedin_contacts(company_name: str, location: str = "", job_category
     # Build location keywords for filtering out wrong-country results
     _loc_keywords = _location_keywords(location)
 
-    queries = _build_queries(company_name, location, job_category)
+    queries = _build_queries(company_name, location, job_category, staffing_titles)
 
     for query in queries:
         results = _search_for_profiles(query, session)
@@ -147,7 +152,12 @@ def _snippet_matches_location(snippet: str, loc_keywords: set[str], company_name
     return True
 
 
-def _build_queries(company_name: str, location: str, job_category: str) -> list[str]:
+def _build_queries(
+    company_name: str,
+    location: str,
+    job_category: str,
+    staffing_titles: list[str] | None = None,
+) -> list[str]:
     site = "site:linkedin.com/in"
     name_q = f'"{company_name}"'
     loc = f'"{location}"' if location else ""
@@ -160,8 +170,18 @@ def _build_queries(company_name: str, location: str, job_category: str) -> list[
     }
     is_dach = any(d in location.lower() for d in _dach_locs) if location else False
 
-    queries = [
-        # HR/People ops roles — highest priority for job agency
+    queries = []
+
+    # Staffing-focused query (always first — these are the most valuable contacts)
+    if staffing_titles:
+        # Build two queries: first 6 titles, next 6 titles (OR clauses stay readable)
+        for chunk in [staffing_titles[:6], staffing_titles[6:12]]:
+            if chunk:
+                title_expr = " OR ".join(f'"{t}"' for t in chunk)
+                queries.append(f'{site} {name_q} ({title_expr}) {loc}')
+
+    queries += [
+        # HR/People ops roles
         f'{site} {name_q} ("HR Director" OR "Head of HR" OR "Chief People" OR "Talent Acquisition" OR "CHRO") {loc}',
         # C-suite
         f'{site} {name_q} (CEO OR Founder OR "Managing Director" OR Owner OR "General Manager") {loc}',
@@ -170,14 +190,12 @@ def _build_queries(company_name: str, location: str, job_category: str) -> list[
     ]
 
     if is_dach:
-        # German-specific LinkedIn queries
         queries.append(
             f'{site} {name_q} (Geschäftsführer OR Inhaber OR Personalleiter OR Personalleiterin) {loc}'
         )
         queries.append(
             f'{site} {name_q} (Personalreferent OR "HR Business Partner" OR Recruiter OR Prokurist) {loc}'
         )
-        # Company page people
         queries.append(f'site:linkedin.com/company {name_q} Mitarbeiter OR Mitarbeiterinnen')
 
     if job_category:

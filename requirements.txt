@@ -16,3 +16,5 @@ curl_cffi>=0.7.0
 # Anti-detection: headless browser with stealth patches (bypasses JS challenges, SPAs)
 # After install run: playwright install chromium
 playwright>=1.44.0
+# Gemini AI — initial company research with Google Search grounding
+google-genai>=0.3.0

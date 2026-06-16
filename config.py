@@ -13,16 +13,62 @@ CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 # Haiku is ~8x cheaper and ~3x faster than Sonnet for these simple tasks.
 CLAUDE_FAST_MODEL = os.getenv("CLAUDE_FAST_MODEL", "claude-haiku-4-5-20251001")
 
+# Gemini API key — initial company research with Google Search grounding
+# Get key: https://aistudio.google.com/
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
 # Hunter.io API key (free: 25 searches/month, paid: $49/mo for 500)
 HUNTER_API_KEY = os.getenv("HUNTER_API_KEY", "")
 
-# Apollo.io API key — people search + people/match (personal email & phone reveal)
-# Free plan: unlimited email credits (fair use), paid plans add mobile numbers.
-# Get key: https://app.apollo.io/#/settings/integrations/api
+# Apollo.io API key — kept for reference; Apollo calls are currently disabled.
+# Re-enable by restoring apollo_available() in scrapers/apollo_scraper.py.
 APOLLO_API_KEY = os.getenv("APOLLO_API_KEY", "")
-# How many top contacts (missing email/phone) to enrich via Apollo people/match
-# per /enrich request. Each match costs 1 Apollo credit. 0 = disable.
 APOLLO_MATCH_TOP_N = int(os.getenv("APOLLO_MATCH_TOP_N") or "5")
+
+# People Data Labs — title-based person search (free: 1,000 credits/month)
+# Get key: https://dashboard.peopledatalabs.com/
+PDL_API_KEY = os.getenv("PDL_API_KEY", "")
+
+# Icypeas — email enrichment, replaces Apollo people/match (free: 1,000 credits/month)
+# Get key: https://app.icypeas.com/ → Settings → API
+ICYPEAS_API_KEY = os.getenv("ICYPEAS_API_KEY", "")
+# How many top contacts (missing email) to enrich via Icypeas per /enrich request.
+ICYPEAS_ENRICH_TOP_N = int(os.getenv("ICYPEAS_ENRICH_TOP_N") or "5")
+
+# Employee count threshold: companies at or above this size use staffing-focused
+# contact search (event/HR/people/recruit/operations titles only).
+LARGE_COMPANY_THRESHOLD = int(os.getenv("LARGE_COMPANY_THRESHOLD") or "200")
+
+# Keyword substrings matched against contact titles to identify staffing-relevant people.
+# Used for BOTH post-collection filtering and (large company mode) query construction.
+# Large companies (≥ LARGE_COMPANY_THRESHOLD): ONLY these contacts are kept.
+# Small companies: these are preferred; fall back to all titles if < 3 found.
+STAFFING_TITLE_KEYWORDS = [
+    # Event / MICE
+    "event", "events", "veranstaltung", "veranstaltungen", "veranstaltungsmanag",
+    "conference", "congress", "mice", "seminar", "tagung", "messe",
+    # People / HR
+    "human resource", "human capital", " hr ", "hr-", "-hr", "personal",
+    "people ops", "people operation",
+    # Workforce / Staffing
+    "staff", "staffing", "workforce", "belegschaft",
+    "zeitarbeit", "arbeitnehmerüberlassung", "leiharbeit", "contingent",
+    "temporary worker", "temp worker",
+    # Recruiting / Talent
+    "recruit", "talent acquisition", "talent", "hiring",
+    # Operations (workforce context)
+    "operations", " ops",
+    # Assist / Support HR
+    "assist",
+]
+
+# Exact title terms used for LinkedIn / Google search query construction.
+STAFFING_SEARCH_TITLES = [
+    "HR Manager", "HR Director", "Head of HR", "Recruiter", "Talent Acquisition",
+    "People Operations", "Event Manager", "Events Manager", "Workforce Manager",
+    "Operations Manager", "Staffing Manager", "Human Resources",
+    "Personalleiter", "Personalreferent", "Veranstaltungsmanager",
+]
 
 # Optional: ScraperAPI key to bypass Google/LinkedIn blocks ($49/mo for 100k requests)
 SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "")

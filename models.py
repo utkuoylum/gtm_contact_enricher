@@ -92,6 +92,7 @@ class EnrichmentResult(BaseModel):
     company_name: str
     domain: Optional[str] = None
     company_contact_info: Optional[CompanyContactInfo] = None
+    employee_count: Optional[int] = None   # approximate, from Gemini initial search
     contacts: List[Contact] = []
     total_found: int = 0
     sources_used: List[str] = []
