@@ -625,6 +625,18 @@ _NOT_A_NAME_WORD = frozenset({
     "radisson", "marriott", "hilton", "hyatt", "sheraton", "westin", "ibis",
     # HTML/meta junk that leaks into scraped text
     "description", "keywords",
+    # Impressum / legal page artifacts
+    "impressum", "imprint", "datenschutz", "kontakt", "contact", "info", "about",
+    "legal", "privacy", "disclaimer", "copyright",
+    # Country/geography names that appear as scraping artifacts (e.g. "Germany Impressum")
+    "germany", "deutschland", "austria", "österreich", "switzerland", "schweiz",
+    "china", "japan", "france", "italy", "spain", "sweden", "netherlands",
+    "australia", "india", "korea", "taiwan", "hongkong", "poland",
+    # Generic role/entity words that are NOT person names
+    "foundation", "investment", "investor", "partner", "partners",
+    "holding", "venture", "capital", "fund", "group", "management",
+    "consulting", "technology", "technologies", "international", "global",
+    "enterprise", "limited", "gmbh", "asia", "europe", "pacific",
 })
 
 
