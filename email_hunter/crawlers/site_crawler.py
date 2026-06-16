@@ -29,6 +29,7 @@ def crawl_domain(domain: str, max_pages: int = 80) -> dict:
         emails: set[str],
         phones: set[str],
         pages_crawled: int,
+        text: str,          # concatenated plain text from first 5 pages (for Claude)
     }
     """
     base = f"https://{domain}"
@@ -36,6 +37,7 @@ def crawl_domain(domain: str, max_pages: int = 80) -> dict:
     visited = set()
     emails: set[str] = set()
     phones: set[str] = set()
+    page_texts: list[str] = []  # collect text from early pages for Claude
 
     # Seed queue: high-priority paths first, then homepage
     queue: deque[str] = deque()
@@ -62,6 +64,11 @@ def crawl_domain(domain: str, max_pages: int = 80) -> dict:
         if page_emails:
             logger.debug(f"[site_crawler] {url} → {page_emails}")
 
+        # Collect plain text from first 5 pages for Claude obfuscation detection
+        if len(page_texts) < 5:
+            from bs4 import BeautifulSoup as _BS
+            page_texts.append(_BS(html, "html.parser").get_text(separator=" ")[:2000])
+
         # Discover new internal links to follow
         new_links = _extract_internal_links(html, base, domain)
         for link in new_links:
@@ -75,6 +82,7 @@ def crawl_domain(domain: str, max_pages: int = 80) -> dict:
         "emails": emails,
         "phones": phones,
         "pages_crawled": len(visited),
+        "text": " ".join(page_texts),
     }
 
 

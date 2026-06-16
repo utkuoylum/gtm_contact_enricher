@@ -23,6 +23,8 @@ from email_hunter.crawlers.github_crawler import find_emails_via_github
 from email_hunter.crawlers.google_crawler import find_emails_via_search
 from email_hunter.crawlers.whois_crawler import get_whois_emails
 from email_hunter.crawlers.job_board_crawler import find_emails_in_job_postings
+from email_hunter.crawlers.gemini_crawler import find_emails_via_gemini
+from email_hunter.crawlers.claude_email_extractor import extract_emails_from_text
 from email_hunter.pattern_detector import detect_pattern, generate_all_candidates, PatternResult
 from email_hunter.smtp_verifier import verify_emails_bulk, VerifyResult
 
@@ -71,12 +73,15 @@ def hunt_domain(domain: str, company_name: str = "") -> DomainHuntResult:
         "google":    lambda: {"emails": find_emails_via_search(domain)},
         "whois":     lambda: get_whois_emails(domain),
         "job_board": lambda: {"emails": find_emails_in_job_postings(company_name or domain, domain)},
+        "gemini":    lambda: find_emails_via_gemini(domain, company_name),
     }
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    site_text: str = ""  # collected for Claude obfuscation pass
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
         futures = {executor.submit(fn): name for name, fn in tasks.items()}
         try:
-            for future in as_completed(futures, timeout=30):
+            for future in as_completed(futures, timeout=35):
                 name = futures[future]
                 try:
                     res = future.result()
@@ -85,6 +90,8 @@ def hunt_domain(domain: str, company_name: str = "") -> DomainHuntResult:
                         all_emails.update(batch)
                     if name == "whois" and isinstance(res, dict):
                         mx_records = res.get("mx_records", [])
+                    if name == "site" and isinstance(res, dict):
+                        site_text = res.get("text", "")
                     sources_used.append(name)
                     logger.info(f"[hunt_domain] {name} done, total emails so far: {len(all_emails)}")
                 except Exception as e:
@@ -101,9 +108,22 @@ def hunt_domain(domain: str, company_name: str = "") -> DomainHuntResult:
                         batch = res.get("emails", set()) if isinstance(res, dict) else set()
                         if isinstance(batch, set):
                             all_emails.update(batch)
+                        if name == "site" and isinstance(res, dict):
+                            site_text = res.get("text", "")
                         sources_used.append(name)
                     except Exception:
                         pass
+
+    # Claude obfuscation pass — runs after site_crawler, catches German "punkt/at" formats
+    if site_text:
+        try:
+            claude_emails = extract_emails_from_text(site_text, domain)
+            if claude_emails:
+                all_emails.update(claude_emails)
+                sources_used.append("claude_email")
+                logger.info(f"[hunt_domain] claude_email: {len(claude_emails)} obfuscated emails decoded")
+        except Exception as e:
+            errors.append(f"claude_email: {e}")
 
     total_raw = len(all_emails)
     logger.info(f"[hunt_domain] total raw emails: {total_raw}")
