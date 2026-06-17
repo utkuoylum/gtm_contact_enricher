@@ -78,7 +78,10 @@ def hunt_domain(domain: str, company_name: str = "") -> DomainHuntResult:
 
     site_text: str = ""  # collected for Claude obfuscation pass
 
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    # Use explicit shutdown(wait=False) — the `with` statement calls shutdown(wait=True)
+    # which would block until site_crawler finishes (~60s) even after our 35s timeout.
+    executor = ThreadPoolExecutor(max_workers=6)
+    try:
         futures = {executor.submit(fn): name for name, fn in tasks.items()}
         try:
             for future in as_completed(futures, timeout=35):
@@ -113,6 +116,8 @@ def hunt_domain(domain: str, company_name: str = "") -> DomainHuntResult:
                         sources_used.append(name)
                     except Exception:
                         pass
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
     # Claude obfuscation pass — runs after site_crawler, catches German "punkt/at" formats
     if site_text:
