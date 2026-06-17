@@ -129,6 +129,18 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/version")
+async def version():
+    """Return the deployed git commit SHA so deploys can be verified."""
+    import os
+    sha = (
+        os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+        or os.environ.get("GIT_SHA")
+        or "unknown"
+    )
+    return {"commit": sha, "short": sha[:7] if sha != "unknown" else "unknown"}
+
+
 async def _run_and_callback(request: EnrichmentRequest):
     loop = asyncio.get_event_loop()
     try:
