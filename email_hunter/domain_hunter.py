@@ -132,15 +132,26 @@ def hunt_domain(domain: str, company_name: str = "") -> DomainHuntResult:
     pattern = detect_pattern(all_emails)
     logger.info(f"[hunt_domain] pattern: {pattern}")
 
-    # --- SMTP verify all found emails in bulk ---
+    # --- SMTP verify all found emails in bulk (15s cap) ---
+    # Purpose: determine deliverable vs catch-all vs invalid. Not worth blocking
+    # the whole enrichment pipeline for — cap at 15s and proceed with whatever
+    # completed. Emails not verified in time stay as smtp_status="unverified".
     email_list = list(all_emails)
     verify_results: list[VerifyResult] = []
     if email_list:
+        from concurrent.futures import ThreadPoolExecutor as _TPE, TimeoutError as _TE
+        _vex = _TPE(max_workers=1)
         try:
-            verify_results = verify_emails_bulk(email_list)
+            _vfut = _vex.submit(verify_emails_bulk, email_list)
+            verify_results = _vfut.result(timeout=15)
+        except _TE:
+            errors.append("smtp_verify: timed out after 15s")
+            logger.warning("[hunt_domain] SMTP verification timed out — proceeding without")
         except Exception as e:
             errors.append(f"smtp_verify: {e}")
             logger.error(f"[hunt_domain] SMTP verify error: {e}")
+        finally:
+            _vex.shutdown(wait=False, cancel_futures=True)
 
     catch_all = any(r.catch_all_domain for r in verify_results)
 

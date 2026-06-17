@@ -156,8 +156,17 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
 
     if domain:
         people_tasks["website"] = lambda: scrape_company_website(domain, company_name)
-        people_tasks["email_hunter"] = lambda: hunt_domain(domain, company_name)
         people_tasks["company_email"] = lambda: get_company_generic_email(domain, company_name, location)
+        # email_hunter (hunt_domain) runs separately below with its own 60s timeout —
+        # it internally runs 6 parallel crawlers that collectively take ~35s, so it needs
+        # more breathing room than the 40s shared budget for other people_tasks.
+
+    # Fire email_hunter in background NOW so it runs in parallel with people_tasks
+    _email_hunter_future = None
+    _email_hunter_executor = None
+    if domain:
+        _email_hunter_executor = ThreadPoolExecutor(max_workers=1)
+        _email_hunter_future = _email_hunter_executor.submit(hunt_domain, domain, company_name)
 
     executor = ThreadPoolExecutor(max_workers=12)
     futures = {executor.submit(fn): name for name, fn in people_tasks.items()}
@@ -167,9 +176,7 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
             name = futures[future]
             try:
                 res = future.result()
-                if name == "email_hunter":
-                    hunt_result = res
-                elif name == "phone":
+                if name == "phone":
                     phone_result = res
                 elif name == "company_email":
                     company_generic_email = res
@@ -186,9 +193,7 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
             if future.done():
                 try:
                     res = future.result()
-                    if name == "email_hunter":
-                        hunt_result = res
-                    elif name == "phone":
+                    if name == "phone":
                         phone_result = res
                     elif name == "company_email":
                         company_generic_email = res
@@ -200,9 +205,18 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
             else:
                 errors.append(f"{name} timed out")
     finally:
-        # Don't block waiting for stragglers — threads that missed the deadline
-        # are abandoned. cancel_futures cancels queued-but-not-started tasks.
         executor.shutdown(wait=False, cancel_futures=True)
+
+    # Collect email_hunter result — wait up to 60s total (already running since above)
+    if _email_hunter_future is not None:
+        try:
+            hunt_result = _email_hunter_future.result(timeout=60)
+            sources_used.append("email_hunter")
+        except Exception as e:
+            errors.append(f"email_hunter: {e}")
+        finally:
+            if _email_hunter_executor:
+                _email_hunter_executor.shutdown(wait=False, cancel_futures=True)
 
     logger.info(f"People found: {len(raw_contacts)}, email_hunter: {hunt_result is not None}, phone: {phone_result is not None}")
 
