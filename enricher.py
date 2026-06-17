@@ -308,12 +308,18 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
     unverified = [c for c in deduped if c.get("email") and c.get("email") not in verified_email_map]
     if unverified:
         emails_to_verify = [c["email"] for c in unverified]
+        from concurrent.futures import ThreadPoolExecutor as _BVTPE, TimeoutError as _BVTE
+        _bv_ex = _BVTPE(max_workers=1)
         try:
-            vr_list = verify_emails_bulk(emails_to_verify)
+            vr_list = _bv_ex.submit(verify_emails_bulk, emails_to_verify).result(timeout=15)
             for vr in vr_list:
                 verified_email_map[vr.email] = vr.status
+        except _BVTE:
+            errors.append("bulk_verify: timed out after 15s")
         except Exception as e:
             errors.append(f"bulk_verify: {e}")
+        finally:
+            _bv_ex.shutdown(wait=False, cancel_futures=True)
 
     # 7b. Optional: hunt direct lines for top-rated contacts
     region = _infer_region(domain or "", location)
@@ -544,13 +550,24 @@ def _enrich_emails_with_hunter(
             continue
         first, last = parts[0], parts[-1]
 
-        from email_hunter.pattern_detector import normalize
+        from email_hunter.pattern_detector import normalize, apply_pattern, PATTERNS as _PATS
         fi = normalize(first)
         la = normalize(last)
+        # Pre-generate all expected local parts for this person across every pattern
+        _expected_locals = {apply_pattern(p, first, last) for p in _PATS if apply_pattern(p, first, last)}
+
+        def _name_matches_local(local: str) -> bool:
+            """Return True if this email local part could belong to this person."""
+            if local in _expected_locals:
+                return True
+            # Fallback: initial must be at the START of the local, last name must follow
+            # (avoids false positives like "a" in "tbajohr" for Andreas Bajohr)
+            fi_init = fi[0] if fi else ""
+            return bool(fi_init and local.startswith(fi_init) and la and la in local)
 
         # 1st priority: SMTP-verified match
         for local, email in hunt_email_verified.items():
-            if fi in local and la in local:
+            if _name_matches_local(local):
                 contact["email"] = email
                 break
 
@@ -560,23 +577,27 @@ def _enrich_emails_with_hunter(
         # 2nd priority: web-discovered but SMTP unknown (e.g. Gemini-found emails,
         # common when server blocks probes — not a sign the email is wrong)
         for local, email in hunt_email_discovered.items():
-            if fi in local and la in local:
+            if _name_matches_local(local):
                 contact["email"] = email
                 break
 
         if contact.get("email"):
             continue
 
-        # 3rd priority: pattern-generate + SMTP probe (confidence >= 20 is enough
-        # when server is known to return unknown for all addresses)
+        # 3rd priority: pattern-generate candidate (no SMTP — too slow for bulk).
+        # Gemini already gives us real emails via hunt_result; if nothing matched above,
+        # fall back to generating the top-1 candidate from pattern and include it as
+        # unverified (confidence 15) rather than burning 8-30s on SMTP.
         if not pattern:
             continue
         try:
-            found = find_person_email(first, last, domain, pattern=pattern, max_verify=5)
-            if found and found.get("email") and found.get("confidence", 0) >= 20:
-                contact["email"] = found["email"]
+            from email_hunter.pattern_detector import apply_pattern
+            top_local = apply_pattern(pattern.pattern, first, last)
+            if top_local:
+                contact["email"] = f"{top_local}@{domain}"
+                contact["email_verified"] = False
         except Exception as e:
-            errors.append(f"find_person_email({full_name}): {e}")
+            errors.append(f"pattern_email({full_name}): {e}")
 
 
 def _deduplicate(raw: list[dict]) -> list[dict]:
