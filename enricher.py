@@ -298,6 +298,8 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
                         if c.get("full_name", "").lower() in surviving_names
                     ]
                     deduped.sort(key=lambda c: -c.get("confidence", 0))
+                    # Drop contacts Claude scored 0 — not a real person or not employed here
+                    deduped = [c for c in deduped if c.get("confidence", 0) > 0]
         except Exception as e:
             errors.append(f"claude_clean_score: {e}")
 

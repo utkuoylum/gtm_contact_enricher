@@ -323,6 +323,9 @@ _XING_PROFILE_LINK_RE = re.compile(
 _TITLE_FIRST_WORDS = {
     "director", "manager", "head", "chief", "senior", "junior", "lead", "team",
     "vice", "assistant", "cover", "image", "markdown", "content", "employees",
+    # XING UI / upsell elements that Jina renders as text
+    "buy", "premium", "jetzt", "upgrade", "upgraden", "login", "anmelden",
+    "mehr", "weitere", "suche", "impressum", "datenschutz", "kontakt",
 }
 
 
