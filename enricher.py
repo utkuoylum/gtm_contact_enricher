@@ -266,8 +266,19 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
     deduped = _deduplicate(raw_contacts)
     logger.info(f"After dedup: {len(deduped)} people")
 
-    # 4b+4c. Single Claude call: remove false positives + score confidence
-    if deduped:
+    # 4b+4c. Single Claude call: remove false positives + score confidence.
+    # Authoritative sources (impressum, Handelsregister) are legally verified — bypass
+    # the Claude false-positive filter and assign high confidence directly.
+    _AUTHORITATIVE_SOURCES = {"impressum", "northdata", "moneyhouse",
+                               "bundesanzeiger", "german_register"}
+    authoritative = [c for c in deduped if c.get("source") in _AUTHORITATIVE_SOURCES]
+    for c in authoritative:
+        c.setdefault("confidence", 80)
+        c.setdefault("employment_confirmed", True)
+    needs_claude = [c for c in deduped if c.get("source") not in _AUTHORITATIVE_SOURCES]
+
+    claude_deduped: list[dict] = []
+    if needs_claude:
         try:
             from utils.claude_extractor import clean_and_score_contacts, claude_available
             if claude_available():
@@ -281,34 +292,36 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
                         "has_email": bool(c.get("email")),
                         "has_linkedin_url": bool(c.get("linkedin_url")),
                     }
-                    for c in deduped
+                    for c in needs_claude
                 ]
                 cleaned, scored = clean_and_score_contacts(slim, company_name, location, job_category)
                 if cleaned:
                     surviving_names = {c.get("full_name", "").lower() for c in cleaned}
                     score_map = {c.get("full_name", "").lower(): c for c in cleaned}
-                    deduped = [
+                    claude_deduped = [
                         {
                             **c,
                             "title": score_map.get(c.get("full_name", "").lower(), {}).get("title", c.get("title")),
                             "confidence": score_map.get(c.get("full_name", "").lower(), {}).get("confidence", 0),
                             "employment_confirmed": score_map.get(c.get("full_name", "").lower(), {}).get("employment_confirmed", False),
                         }
-                        for c in deduped
+                        for c in needs_claude
                         if c.get("full_name", "").lower() in surviving_names
                     ]
-                    # Bump confidence floor for authoritative sources before sorting/filtering.
-                    # Impressum contacts are legally verified; Handelsregister entries are official.
-                    _AUTHORITATIVE_SOURCES = {"impressum", "northdata", "moneyhouse",
-                                              "bundesanzeiger", "german_register"}
-                    for c in deduped:
-                        if c.get("source") in _AUTHORITATIVE_SOURCES and c.get("confidence", 0) == 0:
-                            c["confidence"] = 40
-                    deduped.sort(key=lambda c: -c.get("confidence", 0))
                     # Drop contacts Claude scored 0 — clearly not a real person (e.g. UI elements)
-                    deduped = [c for c in deduped if c.get("confidence", 0) > 0]
+                    claude_deduped = [c for c in claude_deduped if c.get("confidence", 0) > 0]
+                else:
+                    claude_deduped = needs_claude
+            else:
+                claude_deduped = needs_claude
         except Exception as e:
             errors.append(f"claude_clean_score: {e}")
+            claude_deduped = needs_claude
+
+    # Merge: authoritative contacts first (highest trust), then Claude-scored contacts
+    auth_names = {c.get("full_name", "").lower() for c in authoritative}
+    deduped = authoritative + [c for c in claude_deduped if c.get("full_name", "").lower() not in auth_names]
+    deduped.sort(key=lambda c: -c.get("confidence", 0))
 
     # 4d. Split into staffing-matched vs management (CEO/MD/Geschäftsführer).
     matched_raw, management_raw = _split_contacts(deduped, STAFFING_TITLE_KEYWORDS)

@@ -299,9 +299,22 @@ def extract_phone_from_text(text: str) -> list[str]:
     """Extract international and local phone numbers."""
     pattern = r"(?:\+?\d{1,3}[\s\-.]?)?\(?\d{2,4}\)?[\s\-.]?\d{3,4}[\s\-.]?\d{3,4}"
     phones = re.findall(pattern, text)
-    cleaned = []
+    with_sep = []   # numbers that contain at least one separator (more likely real phones)
+    no_sep = []     # pure digit strings (could be IDs, tax numbers, registry numbers)
     for p in phones:
         digits = re.sub(r"\D", "", p)
-        if 7 <= len(digits) <= 15:
-            cleaned.append(p.strip())
-    return list(set(cleaned))
+        if not (7 <= len(digits) <= 15):
+            continue
+        raw = p.strip()
+        if re.search(r"[\s\-.()+]", raw):
+            with_sep.append(raw)
+        else:
+            no_sep.append(raw)
+    # Return separator-containing numbers first; deduplicate while preserving order
+    seen: set[str] = set()
+    result = []
+    for p in with_sep + no_sep:
+        if p not in seen:
+            seen.add(p)
+            result.append(p)
+    return result
