@@ -1,11 +1,11 @@
 from __future__ import annotations
 """
-People Data Labs (PDL) — kişi arama API'si.
+People Data Labs (PDL) — person search API.
 
-Ücretsiz plan: 1.000 kredi/ay (her başarılı API çağrısı 1 kredi).
-Kişi araması: şirket adı + başlık rolü (HR, recruiting, events, operations).
+Free plan: 1,000 credits/month (1 credit per successful API call).
+Person search: company name + title role (HR, recruiting, events, operations).
 
-Dok: https://docs.peopledatalabs.com/docs/person-search-api
+Docs: https://docs.peopledatalabs.com/docs/person-search-api
 API key: https://dashboard.peopledatalabs.com/
 """
 import os
@@ -30,16 +30,16 @@ def search_pdl_contacts(
     max_results: int = 10,
 ) -> list[dict]:
     """
-    PDL Person Search ile şirket + başlık filtresi uygulayarak kişi arar.
+    Search PDL Person Search API with company + title filters.
 
-    Döndürülen liste enricher.py formatıyla uyumludur:
+    Returned list is compatible with enricher.py format:
       {full_name, title, email, linkedin_url, source}
     """
     if not pdl_available():
         return []
 
     must_clauses = [
-        # Şirket adı tam eşleşme (PDL normalize eder)
+        # Exact company name match (PDL normalizes it internally)
         {"term": {"job_company_name": company_name.lower()}},
     ]
 
@@ -48,7 +48,7 @@ def search_pdl_contacts(
     if country:
         must_clauses.append({"term": {"location_country": country}})
 
-    # Kategori bazlı rol filtresi
+    # Role filter based on job category
     roles = _roles_for_category(job_category)
     should_clauses = [{"term": {"job_title_role": r}} for r in roles]
 
@@ -98,7 +98,7 @@ def search_pdl_contacts(
         if not name:
             continue
 
-        # PDL'nin güvenilirlik skoru düşükse atla
+        # Skip if PDL's confidence score is too low
         if (person.get("likelihood") or 0) < 3:
             continue
 
@@ -149,10 +149,7 @@ def _infer_country(location: str) -> str:
 
 
 def _roles_for_category(job_category: str) -> list[str]:
-    """
-    job_category değerini PDL rol taksonomisine çevir.
-    Boşsa staffing ile alakalı tüm roller döner.
-    """
+    """Map job_category to PDL role taxonomy. Returns all staffing-related roles if empty."""
     cat = (job_category or "").lower()
 
     if "event" in cat or "mice" in cat or "conference" in cat:
@@ -162,7 +159,7 @@ def _roles_for_category(job_category: str) -> list[str]:
     if "staffing" in cat or "zeitarbeit" in cat or "workforce" in cat:
         return ["staffing and outsourcing", "human resources", "operations"]
 
-    # Varsayılan: staffing ajansının ilgilendiği tüm roller
+    # Default: all roles relevant to a staffing agency
     return [
         "human resources",
         "recruiting",

@@ -1,18 +1,18 @@
 from __future__ import annotations
 """
-XING scraper — DACH'ın LinkedIn'i.
+XING scraper — LinkedIn of the DACH region.
 
-Almanya'da LinkedIn'den daha fazla kullanılır (22.5M DACH üyesi).
-XING şirket sayfaları pre-rendered HTML olarak gelir, login gerektirmez.
+Used more than LinkedIn in Germany (22.5M DACH members).
+XING company pages come as pre-rendered HTML — no login required.
 
-İki kaynak:
+Two sources:
   1. XING company pages (xing.com/pages/{slug}):
-     - Şirket email, telefon, adres direkt HTML'de mevcut
-     - Şirkette çalışan kişi listesi (XING'e kayıtlı olanlar)
+     - Company email, phone, address available directly in HTML
+     - List of people working at the company (registered on XING)
 
-  2. XING kişi profilleri via SERP (site:xing.com/profile):
-     - Google/Bing üzerinden Geschäftsführer/HR unvan araması
-     - Profil URL'sinden isim çıkarımı
+  2. XING person profiles via SERP (site:xing.com/profile):
+     - Title search via Google/Bing for Geschäftsführer/HR roles
+     - Name extraction from profile URL slug
 """
 import re
 import logging

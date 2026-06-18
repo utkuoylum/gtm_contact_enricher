@@ -1,17 +1,17 @@
 from __future__ import annotations
 """
-Phone Hunter orchestrator — Hunter.io'nun telefon tarafını scratch'ten kurar.
+Phone Hunter orchestrator — builds phone lookup from scratch.
 
-İki aşama:
-  A) Şirket ana numarası (yüksek başarı)
-     1. Şirket websitesi schema.org / microdata
+Two stages:
+  A) Company main number (high success rate)
+     1. Company website schema.org / microdata
      2. Google/Bing SERP knowledge panel
      3. Yelp Fusion API
      4. Yellow Pages / Yell.com
-     (Tümü paralel çalışır, ilk güvenilir sonuçta durur)
+     (All run in parallel; stops at first reliable result)
 
-  B) Bireysel direkt hatlar (düşük ama denenebilir)
-     — Kişi bazında tetiklenir, ana numaradan ayrı çalışır
+  B) Individual direct lines (low success rate but worth trying)
+     — Triggered per person, runs separately from the main number lookup
 """
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FutTO

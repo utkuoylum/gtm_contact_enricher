@@ -1,14 +1,14 @@
 from __future__ import annotations
 """
-Bundesanzeiger scraper — resmi Alman federal gazetesi.
+Bundesanzeiger scraper — official German federal gazette.
 
-Handelsregister tescil duyurularından Geschäftsführer / Prokurist isimlerini çıkarır.
-Northdata'nın indekslemediği güncel atamalar için değerlidir.
+Extracts Geschäftsführer / Prokurist names from Handelsregister registration announcements.
+Valuable for recent appointments not yet indexed by Northdata.
 
-Yaklaşım:
-  1. SERP araması: site:bundesanzeiger.de "{şirket}" Geschäftsführer
-  2. Eşleşen ilan sayfaları Jina ile okunur
-  3. Tescil metinleri regex ile ayrıştırılır
+Approach:
+  1. SERP search: site:bundesanzeiger.de "{company}" Geschäftsführer
+  2. Matching announcement pages are read via Jina
+  3. Registration texts are parsed with regex
 """
 import re
 import logging
@@ -26,14 +26,14 @@ logger = logging.getLogger(__name__)
 
 _BANZ_DOMAIN = "bundesanzeiger.de"
 
-# Tescil metinlerinde yetkili kişi rolleri
+# Officer roles found in registration texts
 _OFFICER_ROLES = re.compile(
     r"\b(Geschäftsführer(?:in)?|Prokurist(?:in)?|Vorstand(?:svorsitzender|svorsitzende)?|"
     r"Inhaber(?:in)?|Gesellschafter(?:in)?|Gründer(?:in)?|Liquidator(?:in)?)\b",
     re.IGNORECASE,
 )
 
-# "Geschäftsführer: Vorname Nachname" veya "Vorname Nachname, Stadt, *TT.MM.JJJJ"
+# "Geschäftsführer: First Last" or "First Last, City, *DD.MM.YYYY"
 _NAME_AFTER_ROLE = re.compile(
     r"(?:Geschäftsführer(?:in)?|Prokurist(?:in)?|Vorstand(?:svorsitzender)?|"
     r"Inhaber(?:in)?|Liquidator(?:in)?)"
@@ -42,7 +42,7 @@ _NAME_AFTER_ROLE = re.compile(
     re.IGNORECASE,
 )
 
-# İsimden sonra gelen rol: "Max Mustermann, Geschäftsführer"
+# Role following the name: "Max Mustermann, Geschäftsführer"
 _ROLE_AFTER_NAME = re.compile(
     r"([A-ZÜÖÄ][a-züöäß\-]+(?:\s+[a-züöäß\-]+)?\s+[A-ZÜÖÄ][a-züöäß\-]+)"
     r",\s*(?:geb\.\s*[\d.]+,\s*)?(?:\w+,\s*)?"
@@ -52,14 +52,12 @@ _ROLE_AFTER_NAME = re.compile(
 
 
 def find_bundesanzeiger_contacts(company_name: str, location: str = "") -> list[dict]:
-    """
-    Bundesanzeiger'de şirket için tescil ilanlarını arar, yetkili kişileri döndürür.
-    """
+    """Search Bundesanzeiger for company registration announcements and return officers."""
     session = get_session()
     contacts: list[dict] = []
     seen_names: set[str] = set()
 
-    # 1. SERP ile Bundesanzeiger ilan URL'lerini bul
+    # 1. Find Bundesanzeiger announcement URLs via SERP
     query = f'site:{_BANZ_DOMAIN} "{company_name}" Geschäftsführer'
     html = multi_engine_search(query, session)
     if not html:
@@ -68,7 +66,7 @@ def find_bundesanzeiger_contacts(company_name: str, location: str = "") -> list[
     banz_urls = _extract_banz_urls(html, company_name)
     polite_sleep(1.5)
 
-    # 2. İlan metinlerini çek ve ayrıştır
+    # 2. Fetch and parse announcement texts
     for url in banz_urls[:4]:
         try:
             page_text = _fetch_announcement_text(url, session)
@@ -83,7 +81,7 @@ def find_bundesanzeiger_contacts(company_name: str, location: str = "") -> list[
             logger.debug(f"Bundesanzeiger page fetch error ({url}): {e}")
         polite_sleep(1.0)
 
-    # 3. Eğer URL bulunamadıysa SERP snippet'lerinden çıkar
+    # 3. If no announcement URLs found, extract from SERP snippets
     if not contacts and html:
         soup = BeautifulSoup(html, "html.parser")
         serp_text = soup.get_text(separator="\n")
@@ -98,14 +96,14 @@ def find_bundesanzeiger_contacts(company_name: str, location: str = "") -> list[
 
 
 def _extract_banz_urls(html: str, company_name: str) -> list[str]:
-    """SERP HTML'inden bundesanzeiger.de URL'lerini çıkar."""
+    """Extract bundesanzeiger.de URLs from SERP HTML."""
     soup = BeautifulSoup(html, "html.parser")
     urls = []
     company_lower = company_name.lower()
     for a in soup.find_all("a", href=True):
         href = a["href"]
         if _BANZ_DOMAIN in href and "pub/de" in href:
-            # URL şirket adını içeriyorsa öncelikli al
+            # Prioritize if URL or link text contains a company name word
             link_text = a.get_text(separator=" ").lower()
             if any(w in link_text or w in href.lower()
                    for w in company_lower.split() if len(w) > 3):
@@ -116,7 +114,7 @@ def _extract_banz_urls(html: str, company_name: str) -> list[str]:
 
 
 def _fetch_announcement_text(url: str, session) -> str:
-    """İlan sayfasını metin olarak çek (Jina önce, HTTP fallback)."""
+    """Fetch announcement page as plain text (Jina first, HTTP fallback)."""
     if _JINA_OK:
         try:
             text = fetch_with_jina(url)
@@ -131,20 +129,20 @@ def _fetch_announcement_text(url: str, session) -> str:
 
 
 def _extract_officers(text: str, company_name: str) -> list[dict]:
-    """Tescil metninden yetkili kişi isimlerini çıkar."""
+    """Extract officer names from a registration announcement text."""
     contacts = []
     seen: set[str] = set()
 
-    # Şirket adını içeren bölümü bul — yanlış şirketten isim almamak için
+    # Narrow to the section mentioning the company — avoid names from wrong companies
     company_words = [w.lower() for w in company_name.split() if len(w) > 3]
     relevant_text = text
     for i, line in enumerate(text.splitlines()):
         if any(w in line.lower() for w in company_words):
-            # Şirket adından sonraki 30 satırı al
+            # Take 30 lines after the company name mention
             relevant_text = "\n".join(text.splitlines()[max(0, i-2):i+30])
             break
 
-    # "Geschäftsführer: Vorname Nachname" deseni
+    # Pattern: "Geschäftsführer: Vorname Nachname"
     for m in _NAME_AFTER_ROLE.finditer(relevant_text):
         name = _clean_name(m.group(1))
         if name and name.lower() not in seen:
@@ -156,7 +154,7 @@ def _extract_officers(text: str, company_name: str) -> list[dict]:
                 "source": "bundesanzeiger",
             })
 
-    # "Vorname Nachname, Geschäftsführer" deseni
+    # Pattern: "Vorname Nachname, Geschäftsführer"
     for m in _ROLE_AFTER_NAME.finditer(relevant_text):
         name = _clean_name(m.group(1))
         role = m.group(2)
@@ -173,10 +171,10 @@ def _extract_officers(text: str, company_name: str) -> list[dict]:
 
 def _clean_name(raw: str) -> str:
     name = raw.strip()
-    # Doğum tarihi, şehir, "geb." gibi artıkları kaldır
+    # Strip trailing birth date, city, "geb." artifacts
     name = re.sub(r",.*$", "", name).strip()
     name = re.sub(r"\s+", " ", name)
-    # En az iki kelime, her biri büyük harfle başlıyor olmalı
+    # Must be at least two words, each starting with an uppercase letter
     parts = name.split()
     if len(parts) < 2 or len(parts) > 4:
         return ""

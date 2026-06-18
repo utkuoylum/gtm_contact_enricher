@@ -1,10 +1,10 @@
 from __future__ import annotations
 """
 Icypeas — email enrichment API.
-Bilinen kişi (isim + domain) için email bulur.
-Ücretsiz plan: 1.000 kredi/ay, GDPR-uyumlu.
+Finds an email for a known person (name + domain).
+Free plan: 1,000 credits/month, GDPR-compliant.
 
-API dok: https://icypeas.com/documentation
+API docs: https://icypeas.com/documentation
 API key: https://app.icypeas.com/ → Settings → API
 """
 import os
@@ -29,9 +29,9 @@ def find_email_icypeas(
     domain_or_company: str,
 ) -> dict | None:
     """
-    İsim + domain/şirket adından email bulur.
+    Find an email from name + domain/company.
 
-    Döner: {email, email_status} veya None.
+    Returns: {email, email_status} or None.
     email_status: "valid" | "unverified"
     """
     if not icypeas_available():
@@ -100,8 +100,8 @@ def enrich_missing_emails_icypeas(
     top_n: int = 5,
 ) -> None:
     """
-    Email'i eksik olan en iyi top_n kişi için Icypeas ile email arar.
-    Sonuçları contacts listesine in-place yazar.
+    Look up emails via Icypeas for the top_n contacts missing an email.
+    Results are written in-place to the contacts list.
     """
     if not icypeas_available():
         return

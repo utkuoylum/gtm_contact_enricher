@@ -1,14 +1,14 @@
 from __future__ import annotations
 """
-Almanya'ya özgü iş dizinleri.
+German-specific business directories.
 
-Kaynaklar (hepsi ücretsiz, login gerektirmez):
-  - northdata.com  : Handelsregister + Bundesanzeiger aggregatörü; Geschäftsführer isimleri
-  - moneyhouse.de  : Swiss-German register aggregator; officer names (northdata benzeri)
-  - wlw.de         : 600K+ B2B tedarikçi; email ve telefon herkese açık
-  - gelbeseiten.de : Almanya Sarı Sayfalar; özellikle SMB için güçlü
-  - 11880.com      : Alman iş dizini; adres + telefon + email
-  - dasoertliche.de: Alman yerel telefon rehberi; SMB telefon numaraları
+Sources (all free, no login required):
+  - northdata.com  : Handelsregister + Bundesanzeiger aggregator; Geschäftsführer names
+  - moneyhouse.de  : Swiss-German register aggregator; officer names (similar to Northdata)
+  - wlw.de         : 600K+ B2B suppliers; email and phone publicly visible
+  - gelbeseiten.de : German Yellow Pages; strong for SMBs
+  - 11880.com      : German business directory; address + phone + email
+  - dasoertliche.de: German local phone directory; SMB phone numbers
 """
 import re
 import logging

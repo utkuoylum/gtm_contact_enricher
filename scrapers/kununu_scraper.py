@@ -1,16 +1,16 @@
 from __future__ import annotations
 """
-Kununu.com — Alman/Avusturya çalışan yorum platformu.
+Kununu.com — German/Austrian employee review platform.
 
-İki değerli veri noktası:
-  1. İşveren yanıtlarında imzalayan HR kişi isimleri
+Two valuable data points:
+  1. HR person names from employer response signatures
      ("Mit freundlichen Grüßen, Maria Schmidt, HR-Leitung")
-  2. Şirket profil sayfasındaki çalışan sayısı (Gemini yoksa fallback)
+  2. Employee count from the company profile page (fallback when Gemini unavailable)
 
-Scraping yaklaşımı:
-  - Arama: site:kununu.com "{şirket}" → şirket profil slug'ını bul
-  - Profil + yorum yanıtları sayfasını çek
-  - İmza regex'leriyle HR kişilerini ayıkla
+Scraping approach:
+  - Search: site:kununu.com "{company}" → find company profile slug
+  - Fetch profile + review response pages
+  - Extract HR persons via signature regexes
 """
 import re
 import logging
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 _KUNUNU_BASE = "https://www.kununu.com"
 
-# İşveren yanıt imzası desenleri
+# Employer response signature patterns
 # "Viele Grüße, Anna Müller, Head of HR" | "Dein HR-Team, Max Meier"
 _SIGNATURE_PATTERNS = [
     re.compile(
@@ -40,7 +40,7 @@ _SIGNATURE_PATTERNS = [
     ),
 ]
 
-# Çalışan sayısı bloğu: "51-200 Mitarbeiter"
+# Employee count block: "51-200 Mitarbeiter"
 _EMPLOYEE_RANGE_PATTERN = re.compile(
     r"(\d[\d.,]*)\s*[-–]\s*(\d[\d.,]*)\s*(?:Mitarbeiter|Beschäftigte|employees?)",
     re.IGNORECASE,
@@ -53,8 +53,8 @@ _EMPLOYEE_SINGLE_PATTERN = re.compile(
 
 def find_kununu_contacts(company_name: str, location: str = "") -> list[dict]:
     """
-    Kununu'dan şirket çalışan/HR profillerini çeker.
-    Kişilerin yanı sıra çalışan sayısını da döndürür (meta alanında).
+    Scrape employee/HR profiles from Kununu.
+    Also returns employee count in a metadata field on each contact.
     """
     session = get_session()
     contacts: list[dict] = []
@@ -65,7 +65,7 @@ def find_kununu_contacts(company_name: str, location: str = "") -> list[dict]:
         return []
     polite_sleep(1.5)
 
-    # Şirket genel profil sayfası (çalışan sayısı + bazen HR adı)
+    # Company main profile page (employee count + sometimes HR name)
     profile_text = _fetch_page_text(slug_url, session)
     if profile_text:
         employee_count = _parse_employee_count(profile_text)
@@ -77,7 +77,7 @@ def find_kununu_contacts(company_name: str, location: str = "") -> list[dict]:
                     person["_kununu_employee_count"] = employee_count
                 contacts.append(person)
 
-    # Yorum yanıtları sayfası
+    # Review response page
     review_url = slug_url.rstrip("/") + "/kommentare"
     polite_sleep(1.5)
     review_text = _fetch_page_text(review_url, session)
@@ -93,7 +93,7 @@ def find_kununu_contacts(company_name: str, location: str = "") -> list[dict]:
 
 
 def _find_company_profile_url(company_name: str, location: str, session) -> str:
-    """SERP ile kununu.com şirket profil URL'sini bul."""
+    """Find the kununu.com company profile URL via SERP."""
     loc_part = f" {location}" if location else ""
     query = f'site:kununu.com/de "{company_name}"{loc_part}'
     html = multi_engine_search(query, session)
@@ -105,14 +105,14 @@ def _find_company_profile_url(company_name: str, location: str, session) -> str:
 
     for a in soup.find_all("a", href=True):
         href = a["href"]
-        # Slug URL: /de/something (arama veya iş sayfası değil)
+        # Profile URL: /de/something (skip search or job-listing pages)
         if ("kununu.com/de/" in href
                 and "/suche" not in href
                 and "/jobs" not in href
                 and href.count("/") <= 5):
             link_text = a.get_text(separator=" ").lower()
             if any(w in link_text for w in company_lower.split() if len(w) > 3):
-                # Tam URL yoksa temel URL kur
+                # Build full URL if relative
                 if href.startswith("http"):
                     return href
                 return f"{_KUNUNU_BASE}{href}"
@@ -158,7 +158,7 @@ def _clean_name(raw: str) -> str:
     particles = {"von", "van", "de", "der", "den"}
     if not all(p[0].isupper() for p in parts if p.lower() not in particles):
         return ""
-    # Genel kelimeleri reddet
+    # Reject common generic words that appear in names
     _bad = {"team", "hr", "ihr", "ihr", "ihr", "dein", "ihr", "das", "die", "der"}
     if any(p.lower() in _bad for p in parts):
         return ""
