@@ -4,11 +4,11 @@ Almanya'ya özgü iş dizinleri.
 
 Kaynaklar (hepsi ücretsiz, login gerektirmez):
   - northdata.com  : Handelsregister + Bundesanzeiger aggregatörü; Geschäftsführer isimleri
+  - moneyhouse.de  : Swiss-German register aggregator; officer names (northdata benzeri)
   - wlw.de         : 600K+ B2B tedarikçi; email ve telefon herkese açık
   - gelbeseiten.de : Almanya Sarı Sayfalar; özellikle SMB için güçlü
   - 11880.com      : Alman iş dizini; adres + telefon + email
-  - cylex.de       : Avrupa iş dizini
-  - dasoertliche.de: Alman yerel rehberi
+  - dasoertliche.de: Alman yerel telefon rehberi; SMB telefon numaraları
 """
 import re
 import logging
@@ -27,10 +27,14 @@ def find_german_directory_contacts(company_name: str, location: str = "") -> lis
     phones_found: list[str] = []
     emails_found: list[str] = []
 
-    # Run all sources
+    # Officer name sources (Handelsregister aggregators)
     northdata = _scrape_northdata(company_name, location, session)
     contacts.extend(northdata)
 
+    moneyhouse = _scrape_moneyhouse(company_name, location, session)
+    contacts.extend(moneyhouse)
+
+    # Phone/email directory sources
     wlw = _scrape_wlw(company_name, location, session)
     for item in wlw:
         if item.get("phone"):
@@ -46,6 +50,10 @@ def find_german_directory_contacts(company_name: str, location: str = "") -> lis
     eleven = _scrape_11880(company_name, location, session)
     phones_found.extend(eleven.get("phones", []))
     emails_found.extend(eleven.get("emails", []))
+
+    dasoertliche = _scrape_dasoertliche(company_name, location, session)
+    phones_found.extend(dasoertliche.get("phones", []))
+    emails_found.extend(dasoertliche.get("emails", []))
 
     # Do NOT create a fake contact with company_name as person — it's not a real person.
     # Phone/email data flows into result.company_phone separately via phone_hunter.
@@ -174,6 +182,83 @@ def _extract_roles_from_text(text: str) -> list[dict]:
     return contacts[:5]
 
 
+
+
+def _scrape_moneyhouse(company_name: str, location: str, session) -> list[dict]:
+    """
+    Moneyhouse.de — Swiss-German company register aggregator.
+    Shows officer names (Geschäftsführer, Vorstand) similar to Northdata.
+    """
+    query = quote_plus(company_name)
+    url = f"https://www.moneyhouse.de/suche?q={query}"
+
+    html = fetch_url(url, session)
+    if not html:
+        return []
+
+    polite_sleep(0.5)
+    soup = BeautifulSoup(html, "html.parser")
+    name_lower = company_name.lower().split()[0]
+
+    # Find matching company detail link
+    detail_href = None
+    for a in soup.find_all("a", href=re.compile(r"/unternehmen/")):
+        if name_lower in a.get_text().lower():
+            detail_href = a["href"]
+            break
+
+    if not detail_href:
+        return []
+
+    detail_url = f"https://www.moneyhouse.de{detail_href}" if detail_href.startswith("/") else detail_href
+    detail_html = fetch_url(detail_url, session)
+    if not detail_html:
+        return []
+
+    if not _page_matches_company(detail_html, company_name):
+        return []
+
+    polite_sleep(0.5)
+    detail_soup = BeautifulSoup(detail_html, "html.parser")
+    text = detail_soup.get_text(separator="\n")
+    contacts = _extract_roles_from_text(text)
+    for c in contacts:
+        c["source"] = "moneyhouse"
+    return _dedupe_contacts(contacts)
+
+
+def _scrape_dasoertliche(company_name: str, location: str, session) -> dict:
+    """
+    DasOertliche.de — German local business phone directory.
+    Best for SMB phone numbers not found via Google Maps or other sources.
+    """
+    phones: list[str] = []
+    emails: list[str] = []
+    city = location.split(",")[0].strip() if location else ""
+
+    query = f"{company_name} {city}".strip()
+    url = f"https://www.dasoertliche.de/suche?form_name=search_nat&search_nat={quote_plus(query)}&biz=1"
+
+    html = fetch_url(url, session)
+    if not html:
+        return {"phones": [], "emails": []}
+
+    polite_sleep(0.5)
+    soup = BeautifulSoup(html, "html.parser")
+    name_lower = company_name.lower().split()[0]
+
+    for card in soup.find_all(["div", "article", "li"], class_=re.compile(r"(result|entry|hit|item|company|treffer)", re.I)):
+        if name_lower not in card.get_text().lower():
+            continue
+        for a in card.find_all("a", href=re.compile(r"^tel:")):
+            phones.append(a["href"][4:].strip())
+        for a in card.find_all("a", href=re.compile(r"^mailto:")):
+            emails.append(a["href"][7:].strip())
+        text = card.get_text(separator=" ")
+        phones.extend(extract_phone_from_text(text))
+        break
+
+    return {"phones": list(dict.fromkeys(phones)), "emails": list(dict.fromkeys(emails))}
 
 
 def _scrape_wlw(company_name: str, location: str, session) -> list[dict]:

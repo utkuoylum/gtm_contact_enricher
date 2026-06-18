@@ -19,6 +19,7 @@ from utils.http_client import get_session, fetch_url, polite_sleep
 logger = logging.getLogger(__name__)
 
 CONTACT_PATHS = [
+    "/impressum", "/imprint", "/kontakt",  # German legal pages — phone always here
     "/", "/contact", "/contact-us", "/about", "/about-us",
     "/company", "/reach-us", "/get-in-touch", "/support",
     "/locations", "/offices",

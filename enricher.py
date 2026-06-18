@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as
 from models import Contact, PhoneDetail, EnrichmentResult, CompanyContactInfo
 from utils.domain_finder import find_company_domain
 from utils.rater import rate_contact, recency_adjustment
-from scrapers.website_scraper import scrape_company_website, get_company_generic_email
+from scrapers.website_scraper import scrape_company_website, get_company_generic_email, quick_impressum_check
 from scrapers.linkedin_scraper import search_linkedin_contacts
 from scrapers.google_scraper import google_contact_search, scrape_crunchbase_people
 from scrapers.companies_house import find_company_officers
@@ -114,6 +114,25 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
 
     # Detect if this is likely a German/DACH company
     is_dach = _is_dach_location(location) or _is_dach_domain(domain or "") or _is_german_company(company_name)
+
+    # 1.5. Fast Impressum pre-pass (DACH only) — phone, email, Geschäftsführer in ~5s,
+    #      before the 40-second parallel pool starts. Guarantees we always get
+    #      this legally-required data even if the full website scrape times out.
+    impressum_seed: dict = {}
+    if is_dach and domain:
+        from concurrent.futures import ThreadPoolExecutor as _ImpEx, TimeoutError as _ImpTE
+        _imp_ex = _ImpEx(max_workers=1)
+        try:
+            impressum_seed = _imp_ex.submit(quick_impressum_check, domain).result(timeout=12)
+            if impressum_seed.get("contacts"):
+                raw_contacts.extend(impressum_seed["contacts"])
+                sources_used.append("impressum_prepass")
+        except _ImpTE:
+            errors.append("impressum_prepass: timed out")
+        except Exception as e:
+            errors.append(f"impressum_prepass: {e}")
+        finally:
+            _imp_ex.shutdown(wait=False, cancel_futures=True)
 
     # Pass staffing titles to LinkedIn so it prioritises those queries first.
     # Always provide them — small companies also try staffing titles first.
@@ -228,9 +247,9 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
         errors.extend(phone_result.errors)
 
     result.company_contact_info = CompanyContactInfo(
-        phone=_company_phone_str,
+        phone=_company_phone_str or impressum_seed.get("phone"),
         phone_detail=_company_phone_detail,
-        email=company_generic_email or None,
+        email=impressum_seed.get("email") or company_generic_email or None,
         website=f"https://{domain}" if domain else None,
     )
 

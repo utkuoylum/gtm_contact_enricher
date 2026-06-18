@@ -76,6 +76,37 @@ def _is_company_email(email: str, domain: str, company_keywords: set[str]) -> bo
     return False
 
 
+def quick_impressum_check(domain: str) -> dict:
+    """
+    Fast single-page fetch targeting /impressum then /imprint.
+    Called before the full parallel scrape so DACH company phone/email/officer
+    data is available immediately without waiting for the 40-second pool.
+    Returns {phone: str|None, email: str|None, contacts: list[dict]}.
+    """
+    session = get_session()
+    for path in ("/impressum", "/imprint"):
+        url = f"https://{domain}{path}"
+        html = fetch_url(url, session, use_scraper_api=True)
+        if not html:
+            continue
+        contacts = _parse_impressum(html)
+        soup = BeautifulSoup(html, "html.parser")
+        text = soup.get_text(separator="\n")
+        phones = extract_phone_from_text(text)
+        emails = [
+            e for e in extract_email_from_text(text)
+            if not any(e.endswith(f"@{p}") for p in _THROWAWAY_EMAIL_PROVIDERS)
+        ]
+        if contacts or phones or emails:
+            logger.info(f"Impressum pre-pass ({domain}{path}): {len(contacts)} contacts, phone={bool(phones)}, email={bool(emails)}")
+            return {
+                "phone": phones[0] if phones else None,
+                "email": emails[0] if emails else None,
+                "contacts": contacts,
+            }
+    return {}
+
+
 def scrape_company_website(domain: str, company_name: str = "") -> list[dict]:
     base_url = f"https://{domain}"
     session = get_session()
