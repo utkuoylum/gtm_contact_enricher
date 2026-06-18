@@ -123,7 +123,7 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
         from concurrent.futures import ThreadPoolExecutor as _ImpEx, TimeoutError as _ImpTE
         _imp_ex = _ImpEx(max_workers=1)
         try:
-            impressum_seed = _imp_ex.submit(quick_impressum_check, domain).result(timeout=12)
+            impressum_seed = _imp_ex.submit(quick_impressum_check, domain).result(timeout=25)
             if impressum_seed.get("contacts"):
                 raw_contacts.extend(impressum_seed["contacts"])
                 sources_used.append("impressum_prepass")
