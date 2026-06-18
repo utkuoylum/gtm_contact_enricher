@@ -282,34 +282,30 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
         except Exception as e:
             errors.append(f"claude_clean_score: {e}")
 
-    # 4d. Apply staffing-relevance filter based on company size.
-    # Large companies (≥ threshold): keep ONLY event/HR/people/recruit/ops contacts.
-    # Small companies: prefer those contacts; fall back to all if fewer than 3 found.
-    deduped = _apply_staffing_filter(deduped, large_company, STAFFING_TITLE_KEYWORDS)
+    # 4d. Split into staffing-matched vs unmatched (always split, never drop).
+    matched_raw, unmatched_raw = _split_staffing(deduped, STAFFING_TITLE_KEYWORDS)
+    logger.info(f"Staffing split: {len(matched_raw)} matched, {len(unmatched_raw)} unmatched")
 
-    # 5. Enrich each person with email (using our own hunter)
+    # 5. Enrich matched contacts with email (email hunter + Icypeas).
     if domain:
-        _enrich_emails_with_hunter(deduped, domain, pattern, hunt_result, errors)
+        _enrich_emails_with_hunter(matched_raw, domain, pattern, hunt_result, errors)
 
-    # 5b. Icypeas email enrichment — name + domain → email.
     if domain and icypeas_available():
         from config import ICYPEAS_ENRICH_TOP_N
-        enrich_missing_emails_icypeas(deduped, domain, verified_email_map, errors, ICYPEAS_ENRICH_TOP_N)
+        enrich_missing_emails_icypeas(matched_raw, domain, verified_email_map, errors, ICYPEAS_ENRICH_TOP_N)
 
-    # 6. Bulk-verify newly assigned emails — skip emails from trusted sources
+    # 6. Bulk-verify newly assigned emails on matched contacts.
     _TRUSTED_SOURCES = {"linkedin", "xing", "german_register", "northdata", "hunter"}
-    for c in deduped:
-        src = c.get("source", "")
-        if c.get("email") and src in _TRUSTED_SOURCES:
+    for c in matched_raw:
+        if c.get("email") and c.get("source", "") in _TRUSTED_SOURCES:
             verified_email_map[c["email"]] = "valid"
 
-    unverified = [c for c in deduped if c.get("email") and c.get("email") not in verified_email_map]
+    unverified = [c for c in matched_raw if c.get("email") and c.get("email") not in verified_email_map]
     if unverified:
-        emails_to_verify = [c["email"] for c in unverified]
         from concurrent.futures import ThreadPoolExecutor as _BVTPE, TimeoutError as _BVTE
         _bv_ex = _BVTPE(max_workers=1)
         try:
-            vr_list = _bv_ex.submit(verify_emails_bulk, emails_to_verify).result(timeout=15)
+            vr_list = _bv_ex.submit(verify_emails_bulk, [c["email"] for c in unverified]).result(timeout=15)
             for vr in vr_list:
                 verified_email_map[vr.email] = vr.status
         except _BVTE:
@@ -319,11 +315,11 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
         finally:
             _bv_ex.shutdown(wait=False, cancel_futures=True)
 
-    # 7b. Optional: hunt direct lines for top-rated contacts
+    # 7b. Optional: hunt direct lines for top matched contacts.
     region = _infer_region(domain or "", location)
-    direct_line_map: dict[str, tuple] = {}  # full_name → (phone_str, PhoneInfo)
+    direct_line_map: dict[str, tuple] = {}
     if find_direct_lines and domain:
-        for raw in deduped[:5]:  # Only top 5 to save time
+        for raw in matched_raw[:5]:
             name = raw.get("full_name", "")
             if not name:
                 continue
@@ -336,60 +332,59 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
             except Exception as e:
                 errors.append(f"direct_line({name}): {e}")
 
-    # 8. Rate contacts and build final output
-    contacts = []
-    for raw in deduped:
-        rating, reason = rate_contact(raw.get("title"), job_category)
-        rec_adj, rec_note = recency_adjustment(raw.get("source", ""), raw.get("year_found"))
+    # 8. Build Contact objects for matched and unmatched.
+    def _build_contacts(raws: list[dict]) -> list[Contact]:
+        out = []
+        for raw in raws:
+            rating, reason = rate_contact(raw.get("title"), job_category)
+            rec_adj, rec_note = recency_adjustment(raw.get("source", ""), raw.get("year_found"))
+            email = raw.get("email")
+            smtp_status = verified_email_map.get(email) if email else None
+            email_verified = (smtp_status in ("valid", "catch_all")) if smtp_status else None
+            full_name = raw.get("full_name", "Unknown")
+            direct_info = direct_line_map.get(full_name)
+            direct_phone_str = direct_info[0] if direct_info else None
+            direct_phone_detail = _phone_info_to_model(direct_info[1]) if direct_info else None
+            c = Contact(
+                full_name=full_name,
+                title=raw.get("title"),
+                company=company_name,
+                email=email,
+                email_verified=email_verified,
+                phone=direct_phone_str,
+                phone_detail=direct_phone_detail,
+                direct_phone=direct_phone_str,
+                direct_phone_detail=direct_phone_detail,
+                linkedin_url=raw.get("linkedin_url"),
+                source=raw.get("source", "unknown"),
+                rating=rating,
+                rating_reason=reason,
+                confidence=raw.get("confidence", 0),
+                employment_confirmed=raw.get("employment_confirmed", False),
+                data_year=raw.get("year_found"),
+                recency_note=rec_note,
+            )
+            c._recency_adj = rec_adj  # type: ignore[attr-defined]
+            out.append(c)
+        return out
 
-        email = raw.get("email")
-        smtp_status = verified_email_map.get(email) if email else None
-        email_verified = (smtp_status in ("valid", "catch_all")) if smtp_status else None
+    def _sort_contacts(cs: list[Contact]) -> list[Contact]:
+        cs.sort(key=lambda c: (
+            -(c.confidence),
+            c.rating + getattr(c, "_recency_adj", 0.0),
+            0 if c.email else 1,
+            0 if c.email_verified else 1,
+        ))
+        return cs
 
-        full_name = raw.get("full_name", "Unknown")
-        direct_info = direct_line_map.get(full_name)
+    matched_contacts   = _sort_contacts(_build_contacts(matched_raw))
+    unmatched_contacts = _sort_contacts(_build_contacts(unmatched_raw))
 
-        # Individual phone: only if it's a confirmed direct line from hunt_direct_line.
-        # Company main number is already in result.company_phone — attaching it to every
-        # contact implies a direct line when it's just the switchboard.
-        direct_phone_str = direct_info[0] if direct_info else None
-        direct_phone_detail = _phone_info_to_model(direct_info[1]) if direct_info else None
-
-        c = Contact(
-            full_name=full_name,
-            title=raw.get("title"),
-            company=company_name,
-            email=email,
-            email_verified=email_verified,
-            phone=direct_phone_str,
-            phone_detail=direct_phone_detail,
-            direct_phone=direct_phone_str,
-            direct_phone_detail=direct_phone_detail,
-            linkedin_url=raw.get("linkedin_url"),
-            source=raw.get("source", "unknown"),
-            rating=rating,
-            rating_reason=reason,
-            confidence=raw.get("confidence", 0),
-            employment_confirmed=raw.get("employment_confirmed", False),
-            data_year=raw.get("year_found"),
-            recency_note=rec_note,
-        )
-        # Attach recency score as a private sort key (not in model)
-        c._recency_adj = rec_adj  # type: ignore[attr-defined]
-        contacts.append(c)
-
-    # Sort: primary = confidence (Claude-assessed), secondary = title authority + recency, tertiary = has email
-    contacts.sort(key=lambda c: (
-        -(c.confidence),
-        c.rating + getattr(c, "_recency_adj", 0.0),
-        0 if c.email else 1,
-        0 if c.email_verified else 1,
-    ))
-
-    result.contacts = contacts[:max_contacts]
-    result.total_found = len(contacts)
-    result.sources_used = list(set(sources_used))
-    result.errors = errors
+    result.contacts           = matched_contacts[:max_contacts]
+    result.unmatched_contacts = unmatched_contacts
+    result.total_found        = len(matched_contacts) + len(unmatched_contacts)
+    result.sources_used       = list(set(sources_used))
+    result.errors             = errors
     return result
 
 
@@ -458,40 +453,18 @@ def _domain_plausible(domain: str, company_name: str) -> bool:
 
 
 
-def _apply_staffing_filter(
+def _split_staffing(
     contacts: list[dict],
-    large_company: bool,
     keywords: list[str],
-) -> list[dict]:
+) -> tuple[list[dict], list[dict]]:
+    """Split contacts into (matched, unmatched) based on staffing-relevance keywords.
+
+    Always returns both halves — callers decide what to do with unmatched.
     """
-    Filter contacts by staffing-relevance based on company size.
-
-    Large company (≥ threshold): return ONLY keyword-matching contacts.
-    Small company: return keyword-matching contacts if ≥ 3 found; otherwise all contacts
-    (preserves the existing 5-contact fallback for micro/small firms with no HR dept).
-    """
-    matching = [
-        c for c in contacts
-        if _title_matches_staffing(c.get("title") or "", keywords)
-    ]
-
-    if large_company:
-        logger.info(
-            f"Large company mode: keeping {len(matching)}/{len(contacts)} staffing-relevant contacts"
-        )
-        return matching
-
-    # Small company: prefer staffing contacts if we have enough
-    if len(matching) >= 3:
-        logger.info(
-            f"Small company staffing filter: {len(matching)}/{len(contacts)} contacts matched, using staffing subset"
-        )
-        return matching
-
-    logger.info(
-        f"Small company fallback: only {len(matching)} staffing contacts found, keeping all {len(contacts)}"
-    )
-    return contacts
+    matched   = [c for c in contacts if _title_matches_staffing(c.get("title") or "", keywords)]
+    unmatched = [c for c in contacts if not _title_matches_staffing(c.get("title") or "", keywords)]
+    logger.info(f"_split_staffing: {len(matched)} matched, {len(unmatched)} unmatched out of {len(contacts)}")
+    return matched, unmatched
 
 
 def _title_matches_staffing(title: str, keywords: list[str]) -> bool:

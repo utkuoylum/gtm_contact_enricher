@@ -35,11 +35,8 @@ boş şirket adı olan satıra dokunma; kontakları bul, sonra enrich et.
 
 ## ÖNEMLİ ortam kısıtları (zaman kazandırır)
 
-- **Sandbox bash Railway'e ULAŞAMAZ** (`blocked-by-allowlist`, hatta google.com bile).
-  Endpoint'leri **tarayıcıdan same-origin fetch** ile çağır:
-  bir Chrome sekmesini `https://web-production-b9da8.up.railway.app/health`
-  adresine götür, sonra o sekmede `fetch('/enrich', ...)` çalıştır.
-  CORS yüzünden docs.google.com sekmesinden çağıramazsın; railway origin'inde ol.
+- **Railway endpoint'leri terminalde `curl` ile çağrılabilir** (sandbox kısıtı kalktı).
+  Örnek: `curl -s -X POST https://web-production-b9da8.up.railway.app/enrich -H "Content-Type: application/json" -d '{...}'`
 - **Google Sheet'i fetch ile okuyamazsın** (editor sayfası CSP `connect-src` engeli).
   Okumak için ayrı sekmede `.../gviz/tq?tqx=out:html&gid=0&headers=0` aç,
   `get_page_text` ile oku (satır 1 = başlık dahil gelir).
