@@ -82,16 +82,25 @@ def quick_impressum_check(domain: str) -> dict:
     Called before the full parallel scrape so DACH company phone/email/officer
     data is available immediately without waiting for the 40-second pool.
     Returns {phone: str|None, email: str|None, contacts: list[dict]}.
+    Falls back to Jina when ScraperAPI fails (blocks ~30% of German sites).
     """
     session = get_session()
     for path in ("/impressum", "/imprint"):
         url = f"https://{domain}{path}"
         html = fetch_url(url, session, use_scraper_api=True)
         if not html:
+            # Jina fallback — handles JS-rendered and WAF-blocked pages
+            try:
+                jina_text = fetch_with_jina(url)
+                if jina_text and len(jina_text) > 100:
+                    html = jina_text
+            except Exception:
+                pass
+        if not html:
             continue
         contacts = _parse_impressum(html)
         soup = BeautifulSoup(html, "html.parser")
-        text = soup.get_text(separator="\n")
+        text = soup.get_text(separator="\n") if html.lstrip().startswith("<") else html
         phones = extract_phone_from_text(text)
         emails = [
             e for e in extract_email_from_text(text)
@@ -319,24 +328,29 @@ def _parse_impressum(html: str) -> list[dict]:
     for pattern, role in role_patterns:
         for match in re.finditer(pattern, text, re.IGNORECASE):
             raw = match.group(1).strip().split("\n")[0].strip()
-            # Could be multiple names separated by comma/und
             raw = re.sub(r"\s+", " ", raw)
-            names = re.split(r",|\bund\b|\band\b", raw)
-            for name_raw in names:
+            parts = re.split(r",|\bund\b|\band\b", raw)
+            # Last part may be a role suffix (e.g. "Bundesvorsitzende", "Vorstandsvorsitzender")
+            # rather than a name — detect and use it as the title override.
+            role_suffix = role
+            if parts:
+                last = parts[-1].strip()
+                if last and not re.match(r"^[A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+", last):
+                    # Not a name → treat as role label
+                    role_suffix = last
+                    parts = parts[:-1]
+            for name_raw in parts:
                 name = name_raw.strip()
-                # Must look like a real name: 2 words, both start uppercase
                 if re.match(r"^[A-ZÜÖÄ][a-züöäß\-]+ [A-ZÜÖÄ][a-züöäß\-]+", name):
-                    # Filter out obvious non-names
                     if len(name) > 50 or any(x in name.lower() for x in ["gmbh", "str.", "straße"]):
                         continue
                     person = {
                         "full_name": name,
-                        "title": role,
+                        "title": role_suffix,
                         "email": None,
                         "phone": generic_phone,
                         "source": "impressum",
                     }
-                    # Try to match an email local part to this person
                     fn_parts = name.lower().split()
                     for email in emails:
                         local = email.split("@")[0].lower()
