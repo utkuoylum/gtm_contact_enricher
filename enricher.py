@@ -282,25 +282,26 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
         except Exception as e:
             errors.append(f"claude_clean_score: {e}")
 
-    # 4d. Split into staffing-matched vs unmatched (always split, never drop).
-    matched_raw, unmatched_raw = _split_staffing(deduped, STAFFING_TITLE_KEYWORDS)
-    logger.info(f"Staffing split: {len(matched_raw)} matched, {len(unmatched_raw)} unmatched")
+    # 4d. Split into staffing-matched vs management (CEO/MD/Geschäftsführer).
+    matched_raw, management_raw = _split_contacts(deduped, STAFFING_TITLE_KEYWORDS)
+    logger.info(f"Contact split: {len(matched_raw)} staffing, {len(management_raw)} management")
 
-    # 5. Enrich matched contacts with email (email hunter + Icypeas).
+    # 5. Enrich both lists with email (email hunter + Icypeas).
+    all_to_enrich = matched_raw + management_raw
     if domain:
-        _enrich_emails_with_hunter(matched_raw, domain, pattern, hunt_result, errors)
+        _enrich_emails_with_hunter(all_to_enrich, domain, pattern, hunt_result, errors)
 
     if domain and icypeas_available():
         from config import ICYPEAS_ENRICH_TOP_N
-        enrich_missing_emails_icypeas(matched_raw, domain, verified_email_map, errors, ICYPEAS_ENRICH_TOP_N)
+        enrich_missing_emails_icypeas(all_to_enrich, domain, verified_email_map, errors, ICYPEAS_ENRICH_TOP_N)
 
-    # 6. Bulk-verify newly assigned emails on matched contacts.
+    # 6. Bulk-verify newly assigned emails.
     _TRUSTED_SOURCES = {"linkedin", "xing", "german_register", "northdata", "hunter"}
-    for c in matched_raw:
+    for c in all_to_enrich:
         if c.get("email") and c.get("source", "") in _TRUSTED_SOURCES:
             verified_email_map[c["email"]] = "valid"
 
-    unverified = [c for c in matched_raw if c.get("email") and c.get("email") not in verified_email_map]
+    unverified = [c for c in all_to_enrich if c.get("email") and c.get("email") not in verified_email_map]
     if unverified:
         from concurrent.futures import ThreadPoolExecutor as _BVTPE, TimeoutError as _BVTE
         _bv_ex = _BVTPE(max_workers=1)
@@ -315,11 +316,11 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
         finally:
             _bv_ex.shutdown(wait=False, cancel_futures=True)
 
-    # 7b. Optional: hunt direct lines for top matched contacts.
+    # 7b. Optional: hunt direct lines for top contacts (matched + management).
     region = _infer_region(domain or "", location)
     direct_line_map: dict[str, tuple] = {}
     if find_direct_lines and domain:
-        for raw in matched_raw[:5]:
+        for raw in (matched_raw + management_raw)[:5]:
             name = raw.get("full_name", "")
             if not name:
                 continue
@@ -377,12 +378,12 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
         ))
         return cs
 
-    matched_contacts   = _sort_contacts(_build_contacts(matched_raw))
-    unmatched_contacts = _sort_contacts(_build_contacts(unmatched_raw))
+    matched_contacts    = _sort_contacts(_build_contacts(matched_raw))
+    management_contacts = _sort_contacts(_build_contacts(management_raw))
 
-    result.contacts           = matched_contacts[:max_contacts]
-    result.unmatched_contacts = unmatched_contacts
-    result.total_found        = len(matched_contacts) + len(unmatched_contacts)
+    result.contacts            = matched_contacts[:max_contacts]
+    result.management_contacts = management_contacts
+    result.total_found         = len(matched_contacts) + len(management_contacts)
     result.sources_used       = list(set(sources_used))
     result.errors             = errors
     return result
@@ -453,18 +454,40 @@ def _domain_plausible(domain: str, company_name: str) -> bool:
 
 
 
-def _split_staffing(
+def _is_management_title(title: str) -> bool:
+    """Return True if the title maps to rating=1 (C-suite / owner / MD)."""
+    if not title:
+        return False
+    from utils.rater import rate_contact
+    rating, _ = rate_contact(title, "")
+    return rating == 1
+
+
+def _split_contacts(
     contacts: list[dict],
     keywords: list[str],
 ) -> tuple[list[dict], list[dict]]:
-    """Split contacts into (matched, unmatched) based on staffing-relevance keywords.
+    """Split into (staffing_matched, management).
 
-    Always returns both halves — callers decide what to do with unmatched.
+    staffing_matched  — title contains a staffing/HR/events/recruit keyword.
+    management        — title maps to rating=1 (CEO, Geschäftsführer, MD…).
+    Contacts that match neither are dropped (generic/unknown titles).
+    A title can only be in one bucket: management takes priority when both apply.
     """
-    matched   = [c for c in contacts if _title_matches_staffing(c.get("title") or "", keywords)]
-    unmatched = [c for c in contacts if not _title_matches_staffing(c.get("title") or "", keywords)]
-    logger.info(f"_split_staffing: {len(matched)} matched, {len(unmatched)} unmatched out of {len(contacts)}")
-    return matched, unmatched
+    management = []
+    matched    = []
+    for c in contacts:
+        title = c.get("title") or ""
+        if _is_management_title(title):
+            management.append(c)
+        elif _title_matches_staffing(title, keywords):
+            matched.append(c)
+        # else: drop (not relevant to either bucket)
+    logger.info(
+        f"_split_contacts: {len(matched)} staffing-matched, "
+        f"{len(management)} management out of {len(contacts)}"
+    )
+    return matched, management
 
 
 def _title_matches_staffing(title: str, keywords: list[str]) -> bool:

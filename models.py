@@ -69,8 +69,8 @@ class EnrichmentResult(BaseModel):
     domain: Optional[str] = None
     company_contact_info: Optional[CompanyContactInfo] = None
     employee_count: Optional[int] = None   # approximate, from Gemini initial search
-    contacts: List[Contact] = []           # staffing-criteria matched contacts
-    unmatched_contacts: List[Contact] = [] # found but did not match staffing criteria
+    contacts: List[Contact] = []            # HR / events / staffing matched
+    management_contacts: List[Contact] = [] # CEO / CFO / MD / Geschäftsführer etc.
     total_found: int = 0
     sources_used: List[str] = []
     errors: List[str] = []
