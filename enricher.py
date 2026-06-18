@@ -517,13 +517,16 @@ def _split_contacts(
     """
     management = []
     matched    = []
+    _AUTH_SOURCES = {"impressum", "northdata", "moneyhouse", "bundesanzeiger", "german_register"}
     for c in contacts:
         title = c.get("title") or ""
         if _title_matches_staffing(title, keywords):
             matched.append(c)
         elif _is_management_title(title):
             management.append(c)
-        # else: drop (not relevant to either bucket)
+        elif c.get("source") in _AUTH_SOURCES:
+            # Legally verified person — keep in management even if title isn't recognised
+            management.append(c)
     logger.info(
         f"_split_contacts: {len(matched)} staffing-matched, "
         f"{len(management)} management out of {len(contacts)}"

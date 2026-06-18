@@ -107,7 +107,9 @@ DECISION_MAKER_TITLES = {
         "geschäftsführer", "geschaeftsfuehrer", "geschaftsfuhrer",
         "geschäftsführerin", "gesellschafter", "gesellschafterin",
         "inhaber", "inhaberin", "vorstand", "vorstandsvorsitzender",
-        "vorstandsvorsitzende", "gründer", "gründerin", "mitgründer",
+        "vorstandsvorsitzende", "vorsitzender", "vorsitzende", "bundesvorsitzender",
+        "bundesvorsitzende", "landesvorsitzender", "landesvorsitzende",
+        "gründer", "gründerin", "mitgründer",
         "geschäftsleiterin", "geschäftsleiter", "betriebsinhaber",
         "alleininhaber", "eigentümer", "eigentümerin",
         # French / Italian (for multinational subsidiaries)
