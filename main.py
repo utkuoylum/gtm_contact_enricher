@@ -8,9 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 
-from models import EnrichmentRequest, EnrichmentResult, PersonMatchRequest, PersonMatchResult
+from models import EnrichmentRequest, EnrichmentResult
 from enricher import enrich
-from scrapers.apollo_scraper import match_person, apollo_available
 from config import HOST, PORT
 
 logging.basicConfig(
@@ -73,55 +72,6 @@ async def enrich_contacts(request: EnrichmentRequest, background_tasks: Backgrou
     except Exception as e:
         logger.error(f"Enrichment failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/match_person", response_model=PersonMatchResult, summary="Enrich one person via Apollo people/match")
-async def match_single_person(request: PersonMatchRequest):
-    """
-    Enrich a single, already-identified person with email + phone.
-    Identify by (name + company_name/domain), linkedin_url, or email.
-    Costs 1 Apollo credit per successful match.
-    """
-    if not apollo_available():
-        raise HTTPException(status_code=503, detail="APOLLO_API_KEY not configured")
-    if not (request.linkedin_url or request.email or
-            ((request.full_name or request.last_name) and (request.company_name or request.domain))):
-        raise HTTPException(
-            status_code=422,
-            detail="Provide linkedin_url, email, or name + company_name/domain",
-        )
-
-    loop = asyncio.get_event_loop()
-    try:
-        m = await loop.run_in_executor(
-            executor,
-            lambda: match_person(
-                full_name=request.full_name,
-                first_name=request.first_name,
-                last_name=request.last_name,
-                company_name=request.company_name,
-                domain=request.domain,
-                linkedin_url=request.linkedin_url,
-                email=request.email,
-                reveal_personal_emails=request.reveal_personal_emails,
-            ),
-        )
-    except Exception as e:
-        logger.error(f"match_person failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-    if not m:
-        return PersonMatchResult(found=False)
-    return PersonMatchResult(
-        found=True,
-        full_name=m.get("full_name"),
-        title=m.get("title"),
-        company=m.get("company"),
-        email=m.get("email"),
-        email_status=m.get("email_status"),
-        phone=m.get("phone"),
-        linkedin_url=m.get("linkedin_url"),
-    )
 
 
 @app.get("/health")

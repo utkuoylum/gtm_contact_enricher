@@ -1,8 +1,7 @@
 from __future__ import annotations
 """
 Icypeas — email enrichment API.
-
-Apollo people/match'in yerine geçer: bilinen kişi için email bulur.
+Bilinen kişi (isim + domain) için email bulur.
 Ücretsiz plan: 1.000 kredi/ay, GDPR-uyumlu.
 
 API dok: https://icypeas.com/documentation

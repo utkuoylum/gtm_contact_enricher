@@ -128,8 +128,6 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
         "phone":           lambda: hunt_company_phone(company_name, domain or "", location),
     }
 
-    # Apollo is disabled; block intentionally empty.
-
     if hunter_available():
         # Hunter.io: domain-search gives real emails of named employees.
         # Run with domain if known, else fall back to company name lookup.
@@ -293,7 +291,7 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
     if domain:
         _enrich_emails_with_hunter(deduped, domain, pattern, hunt_result, errors)
 
-    # 5b. Icypeas email enrichment — Apollo people/match'in yerini tutar.
+    # 5b. Icypeas email enrichment — name + domain → email.
     if domain and icypeas_available():
         from config import ICYPEAS_ENRICH_TOP_N
         enrich_missing_emails_icypeas(deduped, domain, verified_email_map, errors, ICYPEAS_ENRICH_TOP_N)

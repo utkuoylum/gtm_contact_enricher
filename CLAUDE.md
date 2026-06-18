@@ -15,7 +15,7 @@ Kullanıcı "Enriched B2B Leads" Google Sheet'ine yeni şirket satırları ekler
    "FRIENDS CO", aynı iş ilanı).
 2. **Chrome ile her şirkette işe alımda etkili kişilerin LinkedIn profillerini
    bul**, sheet'e contact olarak yaz (şirket başına **max 5**).
-3. **Railway app'in 2 endpoint'i ile enrichment** yap (`/enrich` + `/match_person`).
+3. **Railway app'in `/enrich` endpoint'i ile enrichment** yap.
 
 Kullanıcı tercihi her seferinde sorulabilir ama varsayılan: ilkini tut+sil;
 boş şirket adı olan satıra dokunma; kontakları bul, sonra enrich et.
@@ -63,17 +63,6 @@ Dönen: `domain`, `company_contact_info{phone,email,website}`, `contacts[]`
 (her biri: `full_name,title,email,email_verified,phone,direct_phone,linkedin_url,source,rating,confidence`),
 `total_found`, `sources_used`, `errors`.
 → Company Web/Email/Phone kolonlarını ve contact'ların email/telefonunu bundan doldur.
-`/enrich` zaten LinkedIn'i tarar; Almanya KOBİ'lerinde northdata/sicil/Places/Hunter
-kaynakları Apollo'dan daha verimli.
-
-### POST /match_person  (bilinen tek kişi → email+telefon, Apollo people/match)
-```json
-{"full_name":"...","company_name":"...","domain":"..."}   // veya {"linkedin_url":"..."}
-```
-Dönen: `{found,email,email_status,phone,linkedin_url,...}`.
-→ LinkedIn'den bulduğun ama maili/telefonu eksik kişileri zenginleştirmek için.
-**UYARI:** Apollo hesabında kredi tükenince 422 "insufficient credits" döner ve
-app sessizce `found:false` verir. Kredi yoksa boş döner — `/enrich` taşır.
 
 ## Önerilen akış (verimli)
 
@@ -83,8 +72,7 @@ app sessizce `found:false` verir. Kredi yoksa boş döner — `/enrich` taşır.
 4. Enrich biterken, sonucu zayıf olan küçük şirketler için ayrı sekmede
    Google `site:linkedin.com/in "<şirket>" (Geschäftsführer OR Recruiter OR HR)`
    araması yapıp LinkedIn profillerini topla.
-5. Her şirket için: company web/email/phone + en iyi 5 kontağı birleştir,
-   eksik mail/telefonu `/match_person` ile dene, sheet satırına yaz.
+5. Her şirket için: company web/email/phone + en iyi 5 kontağı birleştir, sheet satırına yaz.
 6. gviz ile tekrar okuyup doğrula.
 
 Son güncelleme: 2026-06-15 çalışmasında oluşturuldu/teyit edildi.

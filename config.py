@@ -20,16 +20,11 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # Hunter.io API key (free: 25 searches/month, paid: $49/mo for 500)
 HUNTER_API_KEY = os.getenv("HUNTER_API_KEY", "")
 
-# Apollo.io API key — kept for reference; Apollo calls are currently disabled.
-# Re-enable by restoring apollo_available() in scrapers/apollo_scraper.py.
-APOLLO_API_KEY = os.getenv("APOLLO_API_KEY", "")
-APOLLO_MATCH_TOP_N = int(os.getenv("APOLLO_MATCH_TOP_N") or "5")
-
 # People Data Labs — title-based person search (free: 1,000 credits/month)
 # Get key: https://dashboard.peopledatalabs.com/
 PDL_API_KEY = os.getenv("PDL_API_KEY", "")
 
-# Icypeas — email enrichment, replaces Apollo people/match (free: 1,000 credits/month)
+# Icypeas — email enrichment for known contacts (free: 1,000 credits/month)
 # Get key: https://app.icypeas.com/ → Settings → API
 ICYPEAS_API_KEY = os.getenv("ICYPEAS_API_KEY", "")
 # How many top contacts (missing email) to enrich via Icypeas per /enrich request.
