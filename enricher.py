@@ -478,10 +478,10 @@ def _split_contacts(
     matched    = []
     for c in contacts:
         title = c.get("title") or ""
-        if _is_management_title(title):
-            management.append(c)
-        elif _title_matches_staffing(title, keywords):
+        if _title_matches_staffing(title, keywords):
             matched.append(c)
+        elif _is_management_title(title):
+            management.append(c)
         # else: drop (not relevant to either bucket)
     logger.info(
         f"_split_contacts: {len(matched)} staffing-matched, "
