@@ -280,11 +280,16 @@ def _domain_resolves(domain: str) -> bool:
 
 
 def extract_email_from_text(text: str) -> list[str]:
-    # Deobfuscate common anti-scraping patterns before regex search
+    # Deobfuscate common anti-scraping patterns before regex search.
+    # Order matters: handle spaced variants first so "kontakt [at] adfc.de"
+    # becomes "kontakt@adfc.de" (not "kontakt @ adfc.de" which won't match).
     normalized = (text
-                  .replace("[at]", "@").replace("(at)", "@").replace(" [AT] ", "@")
+                  .replace(" [at] ", "@").replace(" (at) ", "@").replace(" [AT] ", "@")
                   .replace(" AT ", "@").replace(" at ", "@")
-                  .replace("[dot]", ".").replace("(dot)", "."))
+                  .replace("[at]", "@").replace("(at)", "@").replace("[AT]", "@")
+                  .replace(" [dot] ", ".").replace("[dot]", ".").replace("(dot)", "."))
+    # Also collapse any remaining "word @ domain" (space-padded @) patterns
+    normalized = re.sub(r"([A-Za-z0-9._%+\-])\s+@\s+([A-Za-z0-9.\-])", r"\1@\2", normalized)
     pattern = r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}"
     emails = re.findall(pattern, normalized)
     return [e for e in emails if not any(e.endswith(ext) for ext in [".png", ".jpg", ".gif"])]

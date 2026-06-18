@@ -297,8 +297,15 @@ def enrich(company_name: str, location: str = "", job_category: str = "", max_co
                         for c in deduped
                         if c.get("full_name", "").lower() in surviving_names
                     ]
+                    # Bump confidence floor for authoritative sources before sorting/filtering.
+                    # Impressum contacts are legally verified; Handelsregister entries are official.
+                    _AUTHORITATIVE_SOURCES = {"impressum", "northdata", "moneyhouse",
+                                              "bundesanzeiger", "german_register"}
+                    for c in deduped:
+                        if c.get("source") in _AUTHORITATIVE_SOURCES and c.get("confidence", 0) == 0:
+                            c["confidence"] = 40
                     deduped.sort(key=lambda c: -c.get("confidence", 0))
-                    # Drop contacts Claude scored 0 — not a real person or not employed here
+                    # Drop contacts Claude scored 0 — clearly not a real person (e.g. UI elements)
                     deduped = [c for c in deduped if c.get("confidence", 0) > 0]
         except Exception as e:
             errors.append(f"claude_clean_score: {e}")
